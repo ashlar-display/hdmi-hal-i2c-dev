@@ -12,7 +12,7 @@ use hdmi_hal::scdc::{ScdcTransport, read_block_bytewise};
 
 use crate::error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase};
 
-/// SCDC slave address, fixed by the HDMI specification (HDMI 2.1 Table 10-3).
+/// SCDC slave address, fixed by HDMI 2.1.
 const SCDC_ADDRESS: u16 = 0x54;
 
 /// The longest [`I2cDevTransport`] block read
