@@ -50,7 +50,8 @@ The following are out of scope:
 - **EDID reads** — EDID is read over the DDC bus at I²C address 0x50, not 0x54. This crate
   only implements `ScdcTransport`, which operates against the SCDC slave at 0x54. EDID
   parsing belongs in `piaf`; reading the raw bytes is the concern of whatever integration
-  layer calls `piaf`.
+  layer calls `piaf`. (Planned to change with the `DdcBus` implementation, which reads EDID
+  over E-DDC: see the [roadmap](roadmap.md).)
 - **CEC** — unrelated to this crate's scope.
 - **Multi-connector enumeration** — `connector_ddc_adapter` resolves a single named
   connector. Enumerating all connectors on a system is the caller's responsibility.
