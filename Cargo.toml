@@ -18,7 +18,7 @@ all-features = true
 integration = []
 
 [dependencies]
-display-types = "0.4"
+display-types = ">=0.4.3, <0.6"
 hdmi-hal = "0.6"
 i2cdev = "0.6.2"
 libc = "0.2"
