@@ -50,7 +50,8 @@ The following are out of scope:
 - **EDID reads** — EDID is read over the DDC bus at I²C address 0x50, not 0x54. This crate
   only implements `ScdcTransport`, which operates against the SCDC slave at 0x54. EDID
   parsing belongs in `piaf`; reading the raw bytes is the concern of whatever integration
-  layer calls `piaf`.
+  layer calls `piaf`. (Planned to change with the `DdcBus` implementation, which reads EDID
+  over E-DDC: see the [roadmap](roadmap.md).)
 - **CEC** — unrelated to this crate's scope.
 - **Multi-connector enumeration** — `connector_ddc_adapter` resolves a single named
   connector. Enumerating all connectors on a system is the caller's responsibility.
@@ -416,7 +417,7 @@ file descriptor. The `i2c-dev` kernel module must be loaded; on most Linux deskt
 it is either built in or loaded automatically. The calling process needs read/write
 permission on the device node (typically via the `i2c` group).
 
-The SCDC slave address (0x54) is fixed by the HDMI specification. This crate does not
+The SCDC slave address (0x54) is fixed by HDMI 2.1. This crate does not
 expose it as a parameter.
 
 #### errno mapping and the `amdgpu` limitation
@@ -424,7 +425,7 @@ expose it as a parameter.
 The Linux I²C subsystem specifies a standard errno vocabulary for distinct bus conditions
 (`Documentation/i2c/fault-codes.rst`): `ENXIO` for address-phase NACK, `EAGAIN` for
 arbitration loss, `ETIMEDOUT` for timeout, `EBUSY` for bus-busy. `I2cErrorKind` is
-designed against this specification.
+designed against this vocabulary.
 
 In practice, the `amdgpu` DDC adapter does not follow this convention. Tracing the call
 chain from `amdgpu_dm_i2c_xfer` through `dc_submit_i2c` and `dce_i2c_submit_command_hw`
@@ -437,7 +438,7 @@ On `amdgpu`, `I2cTransactionError::kind` will always be `Unknown { errno: EIO }`
 The named variants (`AddressNack`, `Timeout`, etc.) are unreachable on this hardware. This
 is a driver deficiency — the driver has the information internally and discards it — not a
 kernel interface limitation. The richer variant set is retained because it is correct per
-the kernel specification and meaningful on compliant adapters.
+the kernel's documented vocabulary and meaningful on compliant adapters.
 
 ### Above: `hdmi-hal` traits
 

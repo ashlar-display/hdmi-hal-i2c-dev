@@ -11,13 +11,13 @@
 > **Part of [Ashlar](https://ashlar-display.org)** — a display connection stack in Rust,
 > HDMI 2.1 first: from EDID parsing through mode negotiation to FRL link training.
 >
-> [display-types](https://github.com/DracoWhitefire/display-types) ·
-> [piaf](https://github.com/DracoWhitefire/piaf) ·
-> [concordance](https://github.com/DracoWhitefire/concordance) ·
-> [cartouche](https://github.com/DracoWhitefire/cartouche) ·
-> [culvert](https://github.com/DracoWhitefire/culvert) ·
-> [plumbob](https://github.com/DracoWhitefire/plumbob) ·
-> [hdmi-hal](https://github.com/DracoWhitefire/hdmi-hal) ·
+> [display-types](https://github.com/ashlar-display/display-types) ·
+> [piaf](https://github.com/ashlar-display/piaf) ·
+> [concordance](https://github.com/ashlar-display/concordance) ·
+> [cartouche](https://github.com/ashlar-display/cartouche) ·
+> [culvert](https://github.com/ashlar-display/culvert) ·
+> [plumbob](https://github.com/ashlar-display/plumbob) ·
+> [hdmi-hal](https://github.com/ashlar-display/hdmi-hal) ·
 > **hdmi-hal-i2c-dev**
 
 Linux userspace [`hdmi-hal`] backend backed by `/dev/i2c-N` via the `i2c-dev` kernel interface.
