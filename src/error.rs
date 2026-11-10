@@ -3,6 +3,8 @@
 use std::io;
 use std::path::PathBuf;
 
+use hdmi_hal::ddc::{DdcError, DdcErrorKind, NoAcknowledgeSource};
+
 /// The error type for all fallible operations in this crate.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -202,3 +204,40 @@ impl std::error::Error for I2cTransactionError {}
 #[cfg(test)]
 #[path = "error_tests.rs"]
 mod tests;
+
+/// The classification `hdmi-hal` asks of a transport error, so that a caller such as a
+/// procedure polling the sink can tell a failure that may pass from one that will not.
+///
+/// - A transaction maps its [`I2cErrorKind`]: `ENXIO` ([`AddressNack`](I2cErrorKind::AddressNack))
+///   to `NoAcknowledge(Unknown)`, since i915 returns it for a NAK on any byte; a NACKed data
+///   byte to `NoAcknowledge(Data)`; lost arbitration and a busy bus to `Busy`; a clock-stretch
+///   timeout to `Timeout`; an adapter suspended or removed (`ESHUTDOWN`, `ENODEV`) to
+///   `Detached`; `EOPNOTSUPP` to `Unsupported`; a protocol error and an unknown errno to
+///   `Other`.
+/// - A block read longer than one transaction can carry is `Unsupported`: it would be refused
+///   again. A block of another length than asked is `Other`.
+/// - The errors of opening a transport are `Other`; they come before any transaction.
+impl DdcError for I2cDevError {
+    fn kind(&self) -> DdcErrorKind {
+        match self {
+            Self::Transaction(e) => e.kind(),
+            Self::BlockReadTooLong { .. } => DdcErrorKind::Unsupported,
+            _ => DdcErrorKind::Other,
+        }
+    }
+}
+
+/// The kind of the failed transaction, as for [`I2cDevError`].
+impl DdcError for I2cTransactionError {
+    fn kind(&self) -> DdcErrorKind {
+        match self.kind {
+            I2cErrorKind::AddressNack => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
+            I2cErrorKind::DataNack => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
+            I2cErrorKind::ArbitrationLost | I2cErrorKind::BusBusy => DdcErrorKind::Busy,
+            I2cErrorKind::ClockStretchTimeout => DdcErrorKind::Timeout,
+            I2cErrorKind::AdapterGone => DdcErrorKind::Detached,
+            I2cErrorKind::Unsupported => DdcErrorKind::Unsupported,
+            _ => DdcErrorKind::Other,
+        }
+    }
+}

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Requires hdmi-hal's PHY traits by link mode.** `StubPhy` implements `FrlPhy`,
+  hdmi-hal's new name for `HdmiPhy`, and `set_scrambling` is now part of its `TmdsPhy`
+  implementation, as hdmi-hal moved it there.
+
+### Added
+
+- **`StubPhy` implements `TmdsPhy`**, so a TMDS bring-up runs over it: `configure`,
+  `set_scrambling`, `start_output` and `stop_output` forward as the new `PhyCall` variants
+  `Configure`, `SetScrambling`, `StartOutput` and `StopOutput`, and `capabilities` reports
+  `StubPhy::DEFAULT_CAPABILITIES` (600 MHz, a scrambler, low-rate scrambling) or what
+  `with_capabilities` sets.
+- **`DdcError` for `I2cDevError` and `I2cTransactionError`**, as hdmi-hal now requires of a
+  transport's error: `ENXIO` is `NoAcknowledge(Unknown)`, a NACKed data byte
+  `NoAcknowledge(Data)`, `EAGAIN` and `EBUSY` `Busy`, `ETIMEDOUT` `Timeout`, `ESHUTDOWN` and
+  `ENODEV` `Detached`, `EOPNOTSUPP` and a block read too long for one transaction
+  `Unsupported`, and the rest `Other`.
+
+### Internal
+
+- CI fails on `main`, and the publish workflow before anything is built, when `Cargo.toml`
+  has a `[patch]` section: `cargo package` drops it, so a release built with one would not
+  build from crates.io.
+
 ## [0.4.0] - 2026-11-03
 
 ### Changed

@@ -17,8 +17,8 @@ or plumbob can depend on this crate alone and use `I2cDevTransport` as a raw con
 the SCDC register map.
 
 `ScdcTransport` is implemented by opening the DDC adapter device for an HDMI connector
-and issuing raw I²C transactions to the SCDC slave address (0x54). `HdmiPhy` is
-implemented by `StubPhy`, a generic stub that accepts all PHY calls, forwards each as a
+and issuing raw I²C transactions to the SCDC slave address (0x54); its error classifies
+itself as a `DdcError`. `FrlPhy` and `TmdsPhy` are implemented by `StubPhy`, a generic stub that accepts all PHY calls, forwards each as a
 `PhyCall` event to a caller-supplied callback, and returns `Ok(())`. PHY programming from
 Linux userspace has no standard kernel interface; the stub is sufficient to run the full
 FRL training state machine and validate SCDC register logic against a real sink, and lets
@@ -35,8 +35,8 @@ validation, and diagnostic backend, intended for use before and alongside kernel
 `hdmi-hal-i2c-dev` covers:
 
 - `I2cDevTransport` — implements `ScdcTransport` over a `/dev/i2c-N` device file,
-- `StubPhy<F>` — implements `HdmiPhy` with a caller-supplied callback; forwards each PHY
-  call as a `PhyCall` event and returns `Ok(())`,
+- `StubPhy<F>` — implements `FrlPhy` and `TmdsPhy` with a caller-supplied callback;
+  forwards each PHY call as a `PhyCall` event and returns `Ok(())`,
 - `PhyCall` — structured event type describing a single PHY method invocation,
 - `connector_ddc_adapter` — resolves a DRM connector name (e.g. `card0-HDMI-A-1`) to its
   DDC adapter device path (`/dev/i2c-N`) via sysfs,
@@ -80,7 +80,8 @@ hdmi-hal  ──►  hdmi-hal-i2c-dev
 i2cdev    ──►  hdmi-hal-i2c-dev
 ```
 
-- `hdmi-hal` — `ScdcTransport`, `HdmiPhy`, `EqParams`, `LanePatterns`, `FrlOutput`
+- `hdmi-hal` — `ScdcTransport`, `DdcError`, `FrlPhy`, `TmdsPhy`, `EqParams`,
+  `LanePatterns`, `FrlOutput`, `TmdsPhyConfig`, `TmdsPhyCapabilities`
 - `i2cdev` — safe Rust wrappers over the Linux `i2c-dev` kernel interface; provides the
   `I2C_SMBUS` ioctl binding that backs `I2cDevTransport`. This is what allows
   `#![forbid(unsafe_code)]` to hold: all unsafe is contained inside `i2cdev`.
@@ -257,30 +258,48 @@ caller should drop the transport and reconstruct it — via `connector_ddc_adapt
 
 ### `StubPhy<F>`
 
-Implements `HdmiPhy` with a caller-supplied callback. Each method constructs a `PhyCall`
-variant describing the invocation, passes it to the callback, and returns `Ok(())`.
-The callback owns the side effect — logging, recording, asserting — and `StubPhy` itself
-is unconditionally infallible.
+Implements `FrlPhy` and `TmdsPhy` with a caller-supplied callback. Each method constructs
+a `PhyCall` variant describing the invocation, passes it to the callback, and returns
+`Ok(())`. The callback owns the side effect — logging, recording, asserting — and
+`StubPhy` itself is unconditionally infallible. It keeps no state, so it does not refuse
+`start_output` before `configure` as a real PHY does.
 
 ```rust
-pub struct StubPhy<F> {
-    on_call: F,
+pub struct StubPhy<F> { /* private */ }
+
+impl<F> StubPhy<F> {
+    /// 600 MHz, a scrambler, and scrambling at or below 340 Mcsc.
+    pub const DEFAULT_CAPABILITIES: TmdsPhyCapabilities;
 }
 
 impl<F: FnMut(PhyCall)> StubPhy<F> {
     pub fn new(on_call: F) -> Self;
+    pub fn with_capabilities(self, capabilities: TmdsPhyCapabilities) -> Self;
 }
 
-impl<F: FnMut(PhyCall)> HdmiPhy for StubPhy<F> {
+impl<F: FnMut(PhyCall)> FrlPhy for StubPhy<F> {
     type Error = Infallible;
 
     fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), Infallible>;
     fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Infallible>;
     fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Infallible>;
     fn adjust_equalization(&mut self, params: EqParams) -> Result<(), Infallible>;
+}
+
+impl<F: FnMut(PhyCall)> TmdsPhy for StubPhy<F> {
+    type Error = Infallible;
+
+    fn capabilities(&self) -> TmdsPhyCapabilities;
+    fn configure(&mut self, config: TmdsPhyConfig) -> Result<(), Infallible>;
     fn set_scrambling(&mut self, enabled: bool) -> Result<(), Infallible>;
+    fn start_output(&mut self) -> Result<(), Infallible>;
+    fn stop_output(&mut self) -> Result<(), Infallible>;
 }
 ```
+
+Its capabilities default to everything TMDS allows, so that a caller choosing a link from
+them is limited by the sink alone; `with_capabilities` sets others, a PHY without a
+scrambler for example.
 
 `type Error = Infallible` is unconditionally correct: the callback returns `()`, so
 `StubPhy` cannot fail regardless of what the callback does. Callers that propagate
@@ -301,8 +320,8 @@ let phy = StubPhy::new(|call| tx.send(call).unwrap());
 
 ### `PhyCall`
 
-A structured description of a single `HdmiPhy` method invocation, used as the callback
-argument for `StubPhy`.
+A structured description of a single `FrlPhy` or `TmdsPhy` method invocation, used as the
+callback argument for `StubPhy`.
 
 ```rust
 #[derive(Debug)]
@@ -313,13 +332,16 @@ pub enum PhyCall {
     SetFrlOutput(FrlOutput),
     AdjustEqualization(EqParams),
     SetScrambling(bool),
+    Configure(TmdsPhyConfig),
+    StartOutput,
+    StopOutput,
 }
 ```
 
-`#[non_exhaustive]` is intentional: if `HdmiPhy` gains new methods, `PhyCall` gains new
+`#[non_exhaustive]` is intentional: if the PHY traits gain new methods, `PhyCall` gains new
 variants. Downstream crates that match on `PhyCall` — test harnesses, diagnostic tools —
 should not be forced to recompile and update exhaustive matches for methods they do not
-care about. `StubPhy`'s own `HdmiPhy` impl is unaffected; the compiler enforces its
+care about. `StubPhy`'s own trait impls are unaffected; the compiler enforces their
 coverage through the trait, not through the enum.
 
 ### `I2cDevError`
@@ -443,10 +465,10 @@ the kernel's documented vocabulary and meaningful on compliant adapters.
 ### Above: `hdmi-hal` traits
 
 `I2cDevTransport` satisfies `ScdcTransport` as defined in `hdmi-hal`. `StubPhy<F>`
-satisfies `HdmiPhy`. Callers construct these types and pass them — by value or by `&mut`
-reference — to any API that accepts the corresponding trait. Nothing in this crate is
-specific to `culvert` or `plumbob`; those crates accept any `ScdcTransport` and `HdmiPhy`
-respectively.
+satisfies `FrlPhy` and `TmdsPhy`. Callers construct these types and pass them — by value or
+by `&mut` reference — to any API that accepts the corresponding trait. Nothing in this crate
+is specific to `culvert`, `plumbob` or `spiritlevel`; those crates accept any
+`ScdcTransport`, `FrlPhy` and `TmdsPhy` respectively.
 
 The typical end-to-end validation setup:
 
@@ -554,7 +576,7 @@ not appropriate here.
   adding variants does not force dependent crates to update exhaustive matches they do not
   own.
 - **Minimal scope.** This crate does exactly two things: implement `ScdcTransport` over
-  `i2c-dev`, and stub `HdmiPhy`. Discovery helpers are included because they are inseparable
+  `i2c-dev`, and stub `FrlPhy` and `TmdsPhy`. Discovery helpers are included because they are inseparable
   from usability, not because this is a general-purpose DRM sysfs library.
 - **No unsafe code.** `#![forbid(unsafe_code)]`. I²C device access is performed through
   `i2cdev`, which provides safe Rust wrappers over the `i2c-dev` kernel interface. All

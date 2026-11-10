@@ -24,8 +24,8 @@ Linux userspace [`hdmi-hal`] backend backed by `/dev/i2c-N` via the `i2c-dev` ke
 
 `hdmi-hal-i2c-dev` is the **development, validation, and diagnostic backend** for the HDMI stack.
 It implements [`ScdcTransport`] over a real `/dev/i2c-N` device node and provides [`StubPhy`], a
-callback-based [`HdmiPhy`] stub that lets you run the full FRL link training state machine from
-userspace without a PHY kernel driver. Use it to validate protocol crates ([`culvert`], [`plumbob`])
+callback-based [`FrlPhy`] and [`TmdsPhy`] stub that lets you run FRL link training and a TMDS
+bring-up from userspace without a PHY kernel driver. Use it to validate protocol crates ([`culvert`], [`plumbob`])
 against a real HDMI sink before and alongside kernel integration.
 
 This crate is **not** the production path. The production implementation is a kernel module
@@ -121,7 +121,8 @@ GitHub release or tag.
 
 [`hdmi-hal`]: https://crates.io/crates/hdmi-hal
 [`ScdcTransport`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/scdc/trait.ScdcTransport.html
-[`HdmiPhy`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/phy/trait.HdmiPhy.html
+[`FrlPhy`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/phy/trait.FrlPhy.html
+[`TmdsPhy`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/phy/trait.TmdsPhy.html
 [`StubPhy`]: https://docs.rs/hdmi-hal-i2c-dev/latest/hdmi_hal_i2c_dev/phy/struct.StubPhy.html
 [`culvert`]: https://crates.io/crates/culvert
 [`plumbob`]: https://crates.io/crates/plumbob

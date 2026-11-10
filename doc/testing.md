@@ -66,14 +66,16 @@ records every block read it is asked for, so a test can count ioctls.
 
 ### `StubPhy` (in `src/phy_tests.rs`)
 
-Unit tests for the PHY stub, which forwards every `HdmiPhy` call to a callback as a
-`PhyCall`.
+Unit tests for the PHY stub, which forwards every `FrlPhy` and `TmdsPhy` call to a
+callback as a `PhyCall`.
 
 **Covered:**
-- Each `HdmiPhy` method forwards the matching `PhyCall` variant with its arguments:
-  `set_frl_rate`, `send_ltp`, `set_frl_output` (`GapOnly` and `Active`),
-  `adjust_equalization` (including per-lane TxFFE levels) and `set_scrambling` (on and
-  off)
+- Each `FrlPhy` method forwards the matching `PhyCall` variant with its arguments:
+  `set_frl_rate`, `send_ltp`, `set_frl_output` (`GapOnly` and `Active`) and
+  `adjust_equalization` (including per-lane TxFFE levels)
+- Each `TmdsPhy` method does too: `stop_output`, `configure` (with its configuration),
+  `set_scrambling` (on and off) and `start_output`, in the order called
+- `capabilities` reports the defaults, or what `with_capabilities` set
 - The callback runs once per call
 - A stub with a no-op callback accepts calls
 - Recorded calls compare as a whole sequence (`PhyCall` is `Copy` and `Eq`)

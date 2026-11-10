@@ -162,3 +162,59 @@ fn transaction_error_source_is_none() {
     };
     assert!(e.source().is_none());
 }
+
+// --- DdcError ---------------------------------------------------------------
+
+#[test]
+fn errnos_classify_as_ddc_error_kinds() {
+    use hdmi_hal::ddc::{DdcError, DdcErrorKind, NoAcknowledgeSource};
+
+    let kind = |errno| {
+        I2cDevError::Transaction(I2cTransactionError {
+            phase: MessagePhase::Write { register: 0x21 },
+            kind: crate::transport::map_errno(errno),
+        })
+        .kind()
+    };
+    for (errno, expected) in [
+        (
+            libc::ENXIO,
+            DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
+        ),
+        (libc::EAGAIN, DdcErrorKind::Busy),
+        (libc::EBUSY, DdcErrorKind::Busy),
+        (libc::ETIMEDOUT, DdcErrorKind::Timeout),
+        (libc::ESHUTDOWN, DdcErrorKind::Detached),
+        (libc::ENODEV, DdcErrorKind::Detached),
+        (libc::EOPNOTSUPP, DdcErrorKind::Unsupported),
+        (libc::EPROTO, DdcErrorKind::Other),
+        (libc::EIO, DdcErrorKind::Other),
+    ] {
+        assert_eq!(kind(errno), expected, "errno {errno}");
+    }
+
+    let data_nack = I2cTransactionError {
+        phase: MessagePhase::Read { register: 0x21 },
+        kind: I2cErrorKind::DataNack,
+    };
+    assert_eq!(
+        data_nack.kind(),
+        DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data)
+    );
+    let too_long = I2cDevError::BlockReadTooLong {
+        register: 0x40,
+        len: 64,
+        max: 32,
+    };
+    assert_eq!(too_long.kind(), DdcErrorKind::Unsupported);
+    let short = I2cDevError::UnexpectedBlockLength {
+        register: 0xF0,
+        requested: 32,
+        returned: 16,
+    };
+    assert_eq!(short.kind(), DdcErrorKind::Other);
+    let not_found = I2cDevError::ConnectorNotFound {
+        connector: "card0-HDMI-A-1".into(),
+    };
+    assert_eq!(not_found.kind(), DdcErrorKind::Other);
+}
