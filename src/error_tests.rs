@@ -218,3 +218,54 @@ fn errnos_classify_as_ddc_error_kinds() {
     };
     assert_eq!(not_found.kind(), DdcErrorKind::Other);
 }
+
+#[test]
+fn bus_errors_and_refusals_print() {
+    use crate::error::Refusal;
+
+    let transfer = I2cDevError::Transfer {
+        address: 0x54,
+        kind: I2cErrorKind::AddressNack,
+    };
+    assert_eq!(
+        transfer.to_string(),
+        "I²C transfer to 0x54 failed: AddressNack"
+    );
+    let incomplete = I2cDevError::IncompleteTransfer { sent: 3, done: 1 };
+    assert_eq!(
+        incomplete.to_string(),
+        "I²C transfer incomplete: 1 of 3 messages executed"
+    );
+    for (reason, text) in [
+        (Refusal::EmptyWrite, "a write of no bytes"),
+        (
+            Refusal::TooLong { len: 9, max: 8 },
+            "9 bytes, more than the 8 allowed",
+        ),
+        (
+            Refusal::Unreachable { address: 0x37 },
+            "address 0x37 is not reachable",
+        ),
+        (
+            Refusal::Target { address: 0x52 },
+            "the E-DDC target at 0x52 is not reachable",
+        ),
+        (
+            Refusal::Segment { segment: 2 },
+            "E-DDC segment 2 is not reachable",
+        ),
+        (
+            Refusal::PastSegmentEnd {
+                offset: 240,
+                len: 32,
+            },
+            "32 bytes from offset 240 run past the segment",
+        ),
+    ] {
+        assert_eq!(
+            I2cDevError::Refused { reason }.to_string(),
+            format!("refused: {text}")
+        );
+    }
+    assert!(transfer.source().is_none());
+}

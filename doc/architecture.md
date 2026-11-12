@@ -35,6 +35,7 @@ validation, and diagnostic backend, intended for use before and alongside kernel
 `hdmi-hal-i2c-dev` covers:
 
 - `I2cDevTransport` — implements `ScdcTransport` over a `/dev/i2c-N` device file,
+- `I2cDevBus` — implements `DdcBus` over a `/dev/i2c-N` device file with `I2C_RDWR`,
 - `StubPhy<F>` — implements `FrlPhy` and `TmdsPhy` with a caller-supplied callback;
   forwards each PHY call as a `PhyCall` event and returns `Ok(())`,
 - `PhyCall` — structured event type describing a single PHY method invocation,
@@ -259,6 +260,48 @@ method and, due to the `amdgpu` driver collapsing all transaction failures to `E
 disconnect is indistinguishable from a persistent bus error at the API level. The
 caller should drop the transport and reconstruct it — via `connector_ddc_adapter` +
 `open`, or via `from_file` if controlling the fd lifecycle externally.
+
+### `I2cDevBus`
+
+Implements `DdcBus` with `I2C_RDWR`: every operation is one ioctl, one transaction, made of
+messages that each carry their own address.
+
+```rust
+pub const MAX_MESSAGE_LEN: usize = 8192;
+
+pub struct I2cDevBus { /* the bus behind a mutex, and its capabilities */ }
+
+impl I2cDevBus {
+    /// The caller asserts what the adapter does with a transfer.
+    pub fn open_with(path: impl AsRef<Path>, capabilities: DdcCapabilities)
+        -> Result<Self, I2cDevError>;
+}
+
+impl DdcBus for I2cDevBus { type Error = I2cDevError; /* … */ }
+```
+
+- **Over `i2cdev`'s `LinuxI2CBus`, not `LinuxI2CDevice`.** The device's `transfer` overwrites
+  every message's address with its own and marks same-direction neighbours `NO_START`, so an
+  E-DDC read across 0x30 and 0x50 would become one merged write to a single address.
+- **The operations as messages:** `write` one write; `write_read` a write and a read at the
+  same address; `read` one read; `read_segmented` the offset written to the target and the
+  read, preceded for segment 1 and higher by the segment written to 0x30, all in one transfer
+  (segment 0 needs no pointer, E-DDC 8.1.2). A `segmented_piece` capability splits the read
+  into one such transfer per piece.
+- **Refused before any ioctl** (`I2cDevError::Refused`, kind `Unsupported`), as the
+  `DdcBus` contract asks: a write of no bytes; what the capabilities rule out (an address,
+  a length, an E-DDC target or segment); an E-DDC read past the segment's 256 bytes; and a
+  message longer than the kernel's 8192 bytes, since `i2cdev` passes lengths as `u16`. An
+  empty buffer is `Ok` with no bus activity.
+- **Checked after:** a transfer the kernel executed only partly (an adapter with a limit on
+  messages per transfer returns how many it ran) is `IncompleteTransfer`, kind `Other`. A
+  failed ioctl is `Transfer`, with the first message's address and the errno's class,
+  classified as for transactions.
+- **The capabilities are the caller's** (`open_with`): the kernel's functionality bits do
+  not describe what a transfer gets, and the crate cannot read them anyway, since `i2cdev`
+  never issues `I2C_FUNCS` and the crate forbids `unsafe`.
+- **A poisoned lock is recovered,** not a panic: the file descriptor is still good, and a
+  transfer that was cut short is the kernel's to have finished or not.
 
 ### `StubPhy<F>`
 

@@ -80,6 +80,26 @@ callback as a `PhyCall`.
 - A stub with a no-op callback accepts calls
 - Recorded calls compare as a whole sequence (`PhyCall` is `Copy` and `Eq`)
 
+### `I2cDevBus` (in `src/bus_tests.rs`)
+
+Unit tests for the `DdcBus` implementation, through the crate-private `I2cBus` seam: a mock
+records each transfer's messages with their addresses, answers reads, and can fail with an
+errno or execute fewer messages than sent.
+
+**Covered:**
+- Each operation is one transfer, with the addresses and lengths it should have
+- `read_segmented` writes the segment pointer only past segment 0, and a split read is one
+  transfer per piece at the right offsets
+- Empty buffers make no transfer; a write of no bytes is refused
+- Every capability limit (address, write, write-read and read lengths, E-DDC target and
+  segment) and the contract's (segment past E-DDC's highest, a read past the segment, a
+  message over 8192 bytes) is refused before any transfer, as `Unsupported`
+- A failed transfer keeps the first message's address and the errno's class; a transfer the
+  kernel cut short is an error
+- A poisoned lock is recovered
+- The real `LinuxI2CBus` path: opening a missing path fails; on a file that is no I²C
+  device, the transfer reaches the ioctl and fails with `ENOTTY`
+
 ### `read_edid` (in `src/edid_tests.rs`)
 
 Unit tests for the EDID read driver, against a double of a sink's EDID store reached only

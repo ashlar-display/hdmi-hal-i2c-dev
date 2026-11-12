@@ -63,6 +63,14 @@ one transaction. One ioctl is not always one transaction on the wire: that is th
 driver's, and the Synopsys DesignWare HDMI controller's (`dw-hdmi`) reads byte by byte. See
 [`doc/architecture.md`] for the adapters checked.
 
+## The DDC bus
+
+`I2cDevBus` implements `hdmi-hal`'s `DdcBus` with `I2C_RDWR` transfers: each message has its
+own address, so an E-DDC read writes the segment pointer (0x30) and reads the EDID in one
+transfer, and messages may be longer than SMBus's 32 bytes. What the adapter really does
+with a transfer the kernel does not report, so `I2cDevBus::open_with` takes the capabilities
+from the caller, and an operation they rule out is refused before any ioctl.
+
 ## Reading the EDID
 
 `edid::read_edid` reads a sink's EDID over any `hdmi-hal` `DdcBus`, as

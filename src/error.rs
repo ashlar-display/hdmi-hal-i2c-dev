@@ -48,6 +48,31 @@ pub enum I2cDevError {
         /// The most one block read can carry.
         max: usize,
     },
+    /// An `I2C_RDWR` transfer of an [`I2cDevBus`](crate::I2cDevBus) failed: the ioctl
+    /// returned an error. Which of its messages failed the kernel does not say.
+    #[non_exhaustive]
+    Transfer {
+        /// The address of the transfer's first message.
+        address: u8,
+        /// The class of bus condition, from the errno.
+        kind: I2cErrorKind,
+    },
+    /// The kernel executed fewer of a transfer's messages than were sent, as an adapter with
+    /// a limit on messages per transfer does: the operation is incomplete.
+    #[non_exhaustive]
+    IncompleteTransfer {
+        /// The messages sent.
+        sent: u32,
+        /// The messages the kernel executed.
+        done: u32,
+    },
+    /// Refused before any ioctl: the `DdcBus` contract, the bus's capabilities or the kernel
+    /// rule it out, and it would be refused again.
+    #[non_exhaustive]
+    Refused {
+        /// What rules it out.
+        reason: Refusal,
+    },
     /// The kernel returned another number of bytes than the block read asked for. The
     /// buffer is left unchanged rather than partly filled or padded.
     ///
@@ -66,6 +91,65 @@ pub enum I2cDevError {
         /// The length returned.
         returned: usize,
     },
+}
+
+/// Why an [`I2cDevBus`](crate::I2cDevBus) refused an operation before any ioctl.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// A write of no bytes: I²C's address probe, which many adapters reject.
+    EmptyWrite,
+    /// A message longer than the capabilities allow, or than the kernel's 8192 bytes.
+    #[non_exhaustive]
+    TooLong {
+        /// The length asked for.
+        len: usize,
+        /// The most allowed.
+        max: usize,
+    },
+    /// An address the capabilities do not reach.
+    #[non_exhaustive]
+    Unreachable {
+        /// The address.
+        address: u8,
+    },
+    /// An E-DDC target the capabilities do not reach.
+    #[non_exhaustive]
+    Target {
+        /// Its address.
+        address: u8,
+    },
+    /// An E-DDC segment beyond the capabilities' or E-DDC's highest.
+    #[non_exhaustive]
+    Segment {
+        /// The segment.
+        segment: u8,
+    },
+    /// An E-DDC read past the segment's 256 bytes.
+    #[non_exhaustive]
+    PastSegmentEnd {
+        /// The offset.
+        offset: u8,
+        /// The length.
+        len: usize,
+    },
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyWrite => f.write_str("a write of no bytes"),
+            Self::TooLong { len, max } => write!(f, "{len} bytes, more than the {max} allowed"),
+            Self::Unreachable { address } => write!(f, "address 0x{address:02x} is not reachable"),
+            Self::Target { address } => {
+                write!(f, "the E-DDC target at 0x{address:02x} is not reachable")
+            }
+            Self::Segment { segment } => write!(f, "E-DDC segment {segment} is not reachable"),
+            Self::PastSegmentEnd { offset, len } => {
+                write!(f, "{len} bytes from offset {offset} run past the segment")
+            }
+        }
+    }
 }
 
 /// The phase and kind of an I²C transaction failure.
@@ -163,6 +247,16 @@ impl std::fmt::Display for I2cDevError {
                 write!(f, "failed to open I²C device: {}", path.display())
             }
             Self::Transaction(e) => write!(f, "I²C transaction failed: {e}"),
+            Self::Transfer { address, kind } => {
+                write!(f, "I²C transfer to 0x{address:02x} failed: {kind:?}")
+            }
+            Self::IncompleteTransfer { sent, done } => {
+                write!(
+                    f,
+                    "I²C transfer incomplete: {done} of {sent} messages executed"
+                )
+            }
+            Self::Refused { reason } => write!(f, "refused: {reason}"),
             Self::BlockReadTooLong { register, len, max } => write!(
                 f,
                 "block read of {len} bytes from register 0x{register:02x} exceeds the {max}-byte limit"
@@ -221,7 +315,8 @@ impl DdcError for I2cDevError {
     fn kind(&self) -> DdcErrorKind {
         match self {
             Self::Transaction(e) => e.kind(),
-            Self::BlockReadTooLong { .. } => DdcErrorKind::Unsupported,
+            Self::Transfer { kind, .. } => ddc_kind(kind),
+            Self::BlockReadTooLong { .. } | Self::Refused { .. } => DdcErrorKind::Unsupported,
             _ => DdcErrorKind::Other,
         }
     }
@@ -230,14 +325,19 @@ impl DdcError for I2cDevError {
 /// The kind of the failed transaction, as for [`I2cDevError`].
 impl DdcError for I2cTransactionError {
     fn kind(&self) -> DdcErrorKind {
-        match self.kind {
-            I2cErrorKind::AddressNack => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
-            I2cErrorKind::DataNack => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
-            I2cErrorKind::ArbitrationLost | I2cErrorKind::BusBusy => DdcErrorKind::Busy,
-            I2cErrorKind::ClockStretchTimeout => DdcErrorKind::Timeout,
-            I2cErrorKind::AdapterGone => DdcErrorKind::Detached,
-            I2cErrorKind::Unsupported => DdcErrorKind::Unsupported,
-            _ => DdcErrorKind::Other,
-        }
+        ddc_kind(&self.kind)
+    }
+}
+
+/// An errno class as a `DdcErrorKind`, as for [`I2cDevError`].
+fn ddc_kind(kind: &I2cErrorKind) -> DdcErrorKind {
+    match kind {
+        I2cErrorKind::AddressNack => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
+        I2cErrorKind::DataNack => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
+        I2cErrorKind::ArbitrationLost | I2cErrorKind::BusBusy => DdcErrorKind::Busy,
+        I2cErrorKind::ClockStretchTimeout => DdcErrorKind::Timeout,
+        I2cErrorKind::AdapterGone => DdcErrorKind::Detached,
+        I2cErrorKind::Unsupported => DdcErrorKind::Unsupported,
+        _ => DdcErrorKind::Other,
     }
 }

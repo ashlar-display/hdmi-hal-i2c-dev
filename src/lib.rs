@@ -23,6 +23,11 @@
 //! # Ok::<(), hdmi_hal_i2c_dev::I2cDevError>(())
 //! ```
 //!
+//! # The DDC bus
+//!
+//! [`I2cDevBus`] implements `hdmi-hal`'s `DdcBus` with `I2C_RDWR` transfers, an address per
+//! message; see the [`bus`] module.
+//!
 //! # Reading the EDID
 //!
 //! [`read_edid`] reads a sink's EDID over any `hdmi-hal` `DdcBus`, as piaf's read plan
@@ -49,14 +54,16 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod bus;
 pub mod discovery;
 pub mod edid;
 pub mod error;
 pub mod phy;
 pub mod transport;
 
+pub use bus::I2cDevBus;
 pub use discovery::connector_ddc_adapter;
 pub use edid::{EdidReadError, read_edid};
-pub use error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase};
+pub use error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase, Refusal};
 pub use phy::{PhyCall, StubPhy};
 pub use transport::I2cDevTransport;

@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`I2cDevBus`, `hdmi-hal`'s `DdcBus` over `I2C_RDWR`**: one ioctl per operation, each
+  message with its own address, so an E-DDC read writes the segment pointer (0x30) and reads
+  the target in one transfer, through `i2cdev`'s `LinuxI2CBus`. `open_with(path,
+  capabilities)` takes the capabilities from the caller; what they rule out, a write of no
+  bytes, an E-DDC read past its segment and a message over the kernel's 8192 bytes are
+  refused before any ioctl (`I2cDevError::Refused` with a `Refusal`). A failed transfer is
+  `I2cDevError::Transfer` with its address, one the kernel cut short
+  `IncompleteTransfer`; a poisoned lock is recovered.
 - **`edid::read_edid`**, reading a sink's EDID over any `hdmi-hal` `DdcBus` as piaf's
   read plan directs: one E-DDC `read_segmented` per block, into the caller's buffer, bounded
   by the options, the buffer and the segments the bus reaches (an EDID with more blocks is

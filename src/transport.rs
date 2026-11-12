@@ -282,7 +282,7 @@ impl<D: SmbusDevice> ScdcTransport for I2cDevTransport<D> {
 }
 
 /// Extract a raw errno integer from a [`LinuxI2CError`].
-fn to_raw_errno(e: LinuxI2CError) -> i32 {
+pub(crate) fn to_raw_errno(e: LinuxI2CError) -> i32 {
     match e {
         LinuxI2CError::Errno(n) => n,
         LinuxI2CError::Io(io) => io.raw_os_error().unwrap_or(0),
