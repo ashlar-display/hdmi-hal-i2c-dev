@@ -23,6 +23,11 @@
 //! # Ok::<(), hdmi_hal_i2c_dev::I2cDevError>(())
 //! ```
 //!
+//! # Reading the EDID
+//!
+//! [`read_edid`] reads a sink's EDID over any `hdmi-hal` `DdcBus`, as piaf's read plan
+//! directs; see the [`edid`] module.
+//!
 //! # Privileges
 //!
 //! The calling process needs read/write permission on the `/dev/i2c-N` device
@@ -45,11 +50,13 @@
 #![deny(missing_docs)]
 
 pub mod discovery;
+pub mod edid;
 pub mod error;
 pub mod phy;
 pub mod transport;
 
 pub use discovery::connector_ddc_adapter;
+pub use edid::{EdidReadError, read_edid};
 pub use error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase};
 pub use phy::{PhyCall, StubPhy};
 pub use transport::I2cDevTransport;

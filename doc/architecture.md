@@ -40,6 +40,8 @@ validation, and diagnostic backend, intended for use before and alongside kernel
 - `PhyCall` — structured event type describing a single PHY method invocation,
 - `connector_ddc_adapter` — resolves a DRM connector name (e.g. `card0-HDMI-A-1`) to its
   DDC adapter device path (`/dev/i2c-N`) via sysfs,
+- `edid::read_edid` — reads a sink's EDID over any `DdcBus`, running piaf's I/O-free read
+  plan,
 - `I2cDevError` — the unified error type for I²C device operations.
 
 The following are out of scope:
@@ -80,8 +82,10 @@ hdmi-hal  ──►  hdmi-hal-i2c-dev
 i2cdev    ──►  hdmi-hal-i2c-dev
 ```
 
-- `hdmi-hal` — `ScdcTransport`, `DdcError`, `FrlPhy`, `TmdsPhy`, `EqParams`,
+- `hdmi-hal` — `ScdcTransport`, `DdcBus`, `DdcError`, `FrlPhy`, `TmdsPhy`, `EqParams`,
   `LanePatterns`, `FrlOutput`, `TmdsPhyConfig`, `TmdsPhyCapabilities`
+- `piaf` — `read::EdidReadPlan`, the I/O-free plan `read_edid` runs: which block to read next,
+  how many the EDID has, and the checks on each block
 - `i2cdev` — safe Rust wrappers over the Linux `i2c-dev` kernel interface; provides the
   `I2C_SMBUS` ioctl binding that backs `I2cDevTransport`. This is what allows
   `#![forbid(unsafe_code)]` to hold: all unsafe is contained inside `i2cdev`.
@@ -343,6 +347,42 @@ variants. Downstream crates that match on `PhyCall` — test harnesses, diagnost
 should not be forced to recompile and update exhaustive matches for methods they do not
 care about. `StubPhy`'s own trait impls are unaffected; the compiler enforces their
 coverage through the trait, not through the enum.
+
+### `edid::read_edid`
+
+A thin driver for piaf's I/O-free EDID read plan over any `DdcBus`, not only this crate's.
+The plan holds the structure knowledge (which block comes next, at which E-DDC segment and
+offset, how many blocks the EDID has from byte 126 and HF-EEODB, and the checks on each
+block); the driver reads the block it names with `read_segmented` and hands it back, until
+the plan is done.
+
+```rust
+pub const BLOCK_LEN: usize = 128;
+
+pub fn read_edid<B: DdcBus + ?Sized>(
+    bus: &B,
+    blocks: &mut [[u8; BLOCK_LEN]],
+    options: ReadOptions,
+) -> Result<EdidReadPlan, EdidReadError<B::Error>>;
+
+#[non_exhaustive]
+pub enum EdidReadError<E> {
+    Bus { block: u8, error: E },   // the bus failed reading `block`
+    Refused(ReadError),            // the base block failed its checks
+    NoRoom,                        // `blocks` is empty
+}
+```
+
+- **What bounds the read:** the plan reads no more blocks than `options` allow, `blocks`
+  holds, or the bus reaches (`DdcCapabilities::max_segment`, two blocks per segment: an
+  EDID engine that reads segment 0 only gets two). An EDID with more blocks than that is the
+  plan's `BlocksNotRead` warning, not an error, so a caller learns how much it missed.
+- **One attempt per block.** Retries are policy: Linux reads a block up to four times,
+  Amlogic once, and a sink with a corrupt EDID returns a bad base block every time, so only
+  the caller can bound them. A bus error names its block and keeps the bus's error, whose
+  `DdcErrorKind` says whether reading again may help.
+- **No allocation:** the blocks are the caller's buffer, and the plan keeps no copy. The
+  blocks read go to `piaf::parse_edid` as `blocks.as_flattened()`.
 
 ### `I2cDevError`
 

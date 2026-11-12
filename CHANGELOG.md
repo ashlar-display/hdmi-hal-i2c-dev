@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`edid::read_edid`**, reading a sink's EDID over any `hdmi-hal` `DdcBus` as piaf's
+  read plan directs: one E-DDC `read_segmented` per block, into the caller's buffer, bounded
+  by the options, the buffer and the segments the bus reaches (an EDID with more blocks is
+  the plan's `BlocksNotRead` warning). One attempt per block; `EdidReadError` names a failed
+  block, a refused base block, or a buffer with no room. A new dependency on piaf.
 - **`StubPhy` implements `TmdsPhy`**, so a TMDS bring-up runs over it: `configure`,
   `set_scrambling`, `start_output` and `stop_output` forward as the new `PhyCall` variants
   `Configure`, `SetScrambling`, `StartOutput` and `StopOutput`, and `capabilities` reports

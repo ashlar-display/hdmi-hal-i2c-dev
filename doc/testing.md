@@ -80,6 +80,23 @@ callback as a `PhyCall`.
 - A stub with a no-op callback accepts calls
 - Recorded calls compare as a whole sequence (`PhyCall` is `Copy` and `Eq`)
 
+### `read_edid` (in `src/edid_tests.rs`)
+
+Unit tests for the EDID read driver, against a double of a sink's EDID store reached only
+through `read_segmented`, which refuses what its capabilities rule out, can fail from a
+block on, and records each call.
+
+**Covered:**
+- Every block read across segments, at the segment and offset the plan names, one block per
+  call, and the result parsed by `piaf::parse_edid`
+- A bus that reads segment 0 only gets two blocks, and the plan reports the rest as not read
+- The caller's buffer and `ReadOptions::capacity` bound the read too; an empty buffer is
+  `NoRoom`
+- A bus error names its block, with one attempt per block; a bus without segmented reads
+  fails at the base block
+- A bad base block is refused; a bad extension block is read and reported
+- The errors print and chain; an unsized (`dyn`) bus works
+
 ## Tier 2 — `i2c-stub` integration tests
 
 Gated behind `--features integration`. Requires the `i2c-stub` kernel module and a

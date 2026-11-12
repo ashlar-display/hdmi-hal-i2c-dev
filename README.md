@@ -63,6 +63,14 @@ one transaction. One ioctl is not always one transaction on the wire: that is th
 driver's, and the Synopsys DesignWare HDMI controller's (`dw-hdmi`) reads byte by byte. See
 [`doc/architecture.md`] for the adapters checked.
 
+## Reading the EDID
+
+`edid::read_edid` reads a sink's EDID over any `hdmi-hal` `DdcBus`, as
+[`piaf`](https://crates.io/crates/piaf)'s read plan directs: block by block, with an E-DDC
+`read_segmented` per block, into a buffer the caller holds. It returns the finished plan (the
+blocks read, and what went wrong without stopping the read), ready for `piaf::parse_edid`. It
+makes one attempt per block; reading again after an error is the caller's choice.
+
 ## Privileges
 
 The calling process needs read/write permission on the `/dev/i2c-N` device node — typically via
