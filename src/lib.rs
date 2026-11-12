@@ -54,6 +54,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod adapters;
 pub mod bus;
 pub mod discovery;
 pub mod edid;

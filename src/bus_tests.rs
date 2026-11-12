@@ -298,3 +298,73 @@ fn a_file_that_is_no_i2c_device_fails_its_transfer_in_the_ioctl() {
     ));
     assert_eq!(error.kind(), DdcErrorKind::Other);
 }
+
+/// A sysfs tree with `i2c-7/name` holding `name`, and a device node path `…/i2c-7`.
+fn sysfs(name: Option<&str>) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let sys = dir.path().join("sys");
+    std::fs::create_dir_all(sys.join("i2c-7")).unwrap();
+    if let Some(name) = name {
+        std::fs::write(sys.join("i2c-7").join("name"), format!("{name}\n")).unwrap();
+    }
+    let dev = dir.path().join("i2c-7");
+    std::fs::write(&dev, b"").unwrap();
+    (dir, dev)
+}
+
+#[test]
+fn open_takes_the_capabilities_from_the_adapters_name() {
+    let (dir, dev) = sysfs(Some("DesignWare HDMI"));
+    let bus = I2cDevBus::open_in(&dir.path().join("sys"), &dev).unwrap();
+    assert_eq!(bus.adapter(), Some("DesignWare HDMI"));
+    assert_eq!(
+        bus.capabilities(),
+        crate::adapters::capabilities("DesignWare HDMI").unwrap()
+    );
+
+    // An adapter not in the table, or a name that cannot be read: SMBus level.
+    let (dir, dev) = sysfs(Some("i2c-stub"));
+    let bus = I2cDevBus::open_in(&dir.path().join("sys"), &dev).unwrap();
+    assert_eq!(bus.adapter(), Some("i2c-stub"));
+    assert_eq!(bus.capabilities(), SMBUS_LEVEL);
+    let (dir, dev) = sysfs(None);
+    let bus = I2cDevBus::open_in(&dir.path().join("sys"), &dev).unwrap();
+    assert_eq!((bus.adapter(), bus.capabilities()), (None, SMBUS_LEVEL));
+
+    // A path that is not `…/i2c-N` has no name to read.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let bus = I2cDevBus::open_in(&dir.path().join("sys"), file.path()).unwrap();
+    assert_eq!(bus.adapter(), None);
+    let digits = dir.path().join("i2c-x7");
+    std::fs::write(&digits, b"").unwrap();
+    assert_eq!(
+        I2cDevBus::open_in(&dir.path().join("sys"), &digits)
+            .unwrap()
+            .adapter(),
+        None
+    );
+    assert!(I2cDevBus::open("/dev/i2c-does-not-exist").is_err());
+}
+
+#[test]
+fn a_table_adapter_reads_eagain_and_einval_as_its_driver_means_them() {
+    let (mut bus, _) = bus(DdcCapabilities::general());
+    let classify = |bus: &mut I2cDevBus<Mock>, errno| {
+        bus.bus.get_mut().unwrap().errno = Some(errno);
+        bus.write(SCDC, &[0x20, 0]).unwrap_err().kind()
+    };
+    // Opened with the caller's capabilities: Linux's convention.
+    assert_eq!(classify(&mut bus, libc::EAGAIN), DdcErrorKind::Busy);
+    assert_eq!(classify(&mut bus, libc::EINVAL), DdcErrorKind::Other);
+    // dw-hdmi uses EAGAIN for its timeout.
+    bus.known = crate::adapters::known("DesignWare HDMI");
+    assert_eq!(classify(&mut bus, libc::EAGAIN), DdcErrorKind::Timeout);
+    assert_eq!(classify(&mut bus, libc::EINVAL), DdcErrorKind::Unsupported);
+    assert_eq!(
+        classify(&mut bus, libc::ENXIO),
+        DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown)
+    );
+    // amdgpu does not.
+    bus.known = crate::adapters::known("AMDGPU DM i2c hw bus 0");
+    assert_eq!(classify(&mut bus, libc::EAGAIN), DdcErrorKind::Busy);
+}

@@ -17,8 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`I2cDevBus`, `hdmi-hal`'s `DdcBus` over `I2C_RDWR`**: one ioctl per operation, each
   message with its own address, so an E-DDC read writes the segment pointer (0x30) and reads
-  the target in one transfer, through `i2cdev`'s `LinuxI2CBus`. `open_with(path,
-  capabilities)` takes the capabilities from the caller; what they rule out, a write of no
+  the target in one transfer, through `i2cdev`'s `LinuxI2CBus`. `open(path)` takes the
+  capabilities from `adapters`, a table of the DRM DDC adapters by the name they register
+  under (`SMBUS_LEVEL` for one not in it), and reads `EAGAIN` and `EINVAL` as their drivers
+  mean them; `open_with(path, capabilities)` takes the capabilities from the caller; what
+  they rule out, a write of no
   bytes, an E-DDC read past its segment and a message over the kernel's 8192 bytes are
   refused before any ioctl (`I2cDevError::Refused` with a `Refusal`). A failed transfer is
   `I2cDevError::Transfer` with its address, one the kernel cut short

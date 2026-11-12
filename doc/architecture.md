@@ -272,9 +272,13 @@ pub const MAX_MESSAGE_LEN: usize = 8192;
 pub struct I2cDevBus { /* the bus behind a mutex, and its capabilities */ }
 
 impl I2cDevBus {
+    /// The capabilities from the `adapters` table, by the adapter's sysfs name.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
     /// The caller asserts what the adapter does with a transfer.
     pub fn open_with(path: impl AsRef<Path>, capabilities: DdcCapabilities)
         -> Result<Self, I2cDevError>;
+    /// The adapter's sysfs name, as `open` read it.
+    pub fn adapter(&self) -> Option<&str>;
 }
 
 impl DdcBus for I2cDevBus { type Error = I2cDevError; /* … */ }
@@ -297,9 +301,40 @@ impl DdcBus for I2cDevBus { type Error = I2cDevError; /* … */ }
   messages per transfer returns how many it ran) is `IncompleteTransfer`, kind `Other`. A
   failed ioctl is `Transfer`, with the first message's address and the errno's class,
   classified as for transactions.
-- **The capabilities are the caller's** (`open_with`): the kernel's functionality bits do
-  not describe what a transfer gets, and the crate cannot read them anyway, since `i2cdev`
-  never issues `I2C_FUNCS` and the crate forbids `unsafe`.
+- **The capabilities come from the adapter's name** (`open`): the kernel's functionality
+  bits do not describe what a transfer gets, and the crate cannot read them anyway, since
+  `i2cdev` never issues `I2C_FUNCS` and the crate forbids `unsafe`. `open` reads
+  `/sys/class/i2c-dev/i2c-N/name` and takes the capabilities from the `adapters` table
+  below; an adapter not in it, or a name that cannot be read, gets `adapters::SMBUS_LEVEL`.
+  `open_with` takes them from the caller, as an assertion.
+- **Errnos as the adapter's driver means them.** For an adapter in the table, `EAGAIN` is a
+  timeout where its driver returns it for one (dw-hdmi, Inno and rk3066, i915 after a GMBUS
+  timeout), and `EINVAL`, with which these drivers refuse what they cannot do, is
+  `Unsupported`. Otherwise Linux's convention holds: `EAGAIN` is lost arbitration, `Busy`.
+
+### The `adapters` table
+
+Almost every DRM DDC adapter advertises plain I²C, yet several reshape a transfer and report
+success, or limit it and fail with `EINVAL`. The adapter's name identifies it, so the table
+maps names to capabilities, from the drivers' transfer functions:
+
+| Adapter name | Driver | Capabilities |
+|---|---|---|
+| `i915 gmbus …`, `gma500 gmbus …`, `mediatek-hdmi-ddc`, `msm hdmi i2c` | i915, gma500, MediaTek v1, msm | general (msm runs at most 4 messages per transfer, more than any operation here uses) |
+| `DesignWare HDMI` | dw-hdmi | `write` of at most 2 bytes, `write_read` with a one-byte write, no `read`, 0x37 unreachable, reads split on the wire; E-DDC segment 0 only |
+| `DesignWare HDMI QP` | dw-hdmi-qp | as dw-hdmi, and no DisplayID target |
+| `Inno HDMI`, `RK3066 HDMI` | inno-hdmi, rk3066 | only `read_segmented` of EDID |
+| `oaktrail_hdmi_i2c` | gma500 (Oaktrail) | only `read_segmented` of EDID, segment 0 |
+| `mediatek-hdmi-ddc-v2` | MediaTek v2 | 0x50 and 0x54 only, no `read`; E-DDC segment 0 only |
+| `sun4i_hdmi_i2c adapter` | sun4i | messages of at most 1023 bytes; E-DDC segment 0 only |
+| `AMDGPU DM i2c …` | amdgpu (DC) | a 144-byte buffer, address bytes included: `write` 143, `write_read` 1 + 128, `read` 143, E-DDC in 128-byte pieces |
+
+amdgpu's buffer is 538 bytes from DCE 10.0, but the generation is not visible from the
+name, so the table takes the smaller one. Adapters bit-banged through `i2c-algo-bit`
+(radeon, amdgpu before DC, nouveau) are not in it: their engines were not audited.
+`adapters::SMBUS_LEVEL`, for an adapter not in the table, is what the SMBus calls of the
+past could do: `write` 33, `write_read` 1 + 32, `read` 1, E-DDC segment 0 only in 32-byte
+pieces.
 - **A poisoned lock is recovered,** not a panic: the file descriptor is still good, and a
   transfer that was cut short is the kernel's to have finished or not.
 

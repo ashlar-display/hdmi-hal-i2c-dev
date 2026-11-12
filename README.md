@@ -68,8 +68,10 @@ driver's, and the Synopsys DesignWare HDMI controller's (`dw-hdmi`) reads byte b
 `I2cDevBus` implements `hdmi-hal`'s `DdcBus` with `I2C_RDWR` transfers: each message has its
 own address, so an E-DDC read writes the segment pointer (0x30) and reads the EDID in one
 transfer, and messages may be longer than SMBus's 32 bytes. What the adapter really does
-with a transfer the kernel does not report, so `I2cDevBus::open_with` takes the capabilities
-from the caller, and an operation they rule out is refused before any ioctl.
+with a transfer the kernel does not report: `I2cDevBus::open` takes the capabilities from a
+table of the DRM DDC adapters (`adapters`), by the name the adapter registers under, and
+gives an adapter not in it SMBus-level capabilities; `I2cDevBus::open_with` takes them from
+the caller. An operation the capabilities rule out is refused before any ioctl.
 
 ## Reading the EDID
 

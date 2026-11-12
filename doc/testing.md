@@ -99,6 +99,19 @@ errno or execute fewer messages than sent.
 - A poisoned lock is recovered
 - The real `LinuxI2CBus` path: opening a missing path fails; on a file that is no I²C
   device, the transfer reaches the ioctl and fails with `ENOTTY`
+- `open` against a synthetic sysfs tree: a table adapter's capabilities and name, an
+  adapter not in the table and a name that cannot be read (`SMBUS_LEVEL`), a path that is
+  not `i2c-N`
+- A table adapter's `EAGAIN` and `EINVAL` read as its driver means them; the caller's
+  capabilities keep Linux's convention
+
+### The `adapters` table (in `src/adapters_tests.rs`)
+
+**Covered:**
+- The general adapters, by name and name prefix
+- Each reshaping and limited adapter's characteristic limits
+- Names not in the table (including near misses), and `SMBUS_LEVEL`'s values
+- Which adapters' `EAGAIN` is a timeout
 
 ### `read_edid` (in `src/edid_tests.rs`)
 

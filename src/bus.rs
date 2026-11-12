@@ -2,7 +2,7 @@
 //!
 //! [`DdcBus`]: hdmi_hal::ddc::DdcBus
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use i2cdev::core::{I2CMessage, I2CTransfer};
@@ -10,7 +10,8 @@ use i2cdev::linux::{LinuxI2CBus, LinuxI2CError, LinuxI2CMessage};
 
 use hdmi_hal::ddc::{DdcBus, DdcCapabilities, EddcTarget, MAX_SEGMENT, SEGMENT_POINTER};
 
-use crate::error::{I2cDevError, Refusal};
+use crate::adapters::{self, Eagain, Known, SMBUS_LEVEL};
+use crate::error::{I2cDevError, I2cErrorKind, Refusal};
 use crate::transport::{map_errno, to_raw_errno};
 
 /// The longest message the kernel's `i2c-dev` takes in one `I2C_RDWR` transfer
@@ -60,11 +61,11 @@ impl I2cBus for LinuxI2CBus {
 /// address per message, so an E-DDC read writes the segment pointer (0x30) and reads the
 /// target in one transfer.
 ///
-/// Its [`capabilities`](DdcBus::capabilities) are the caller's
-/// ([`open_with`](Self::open_with)): what an adapter really does with a transfer is not
-/// something the kernel reports, so the caller asserts it. An operation the capabilities rule
-/// out is refused before any ioctl ([`I2cDevError::Refused`], kind `Unsupported`), as the
-/// `DdcBus` contract asks.
+/// Its [`capabilities`](DdcBus::capabilities) come from the adapter's name
+/// ([`open`](Self::open), through the [`adapters`] table) or from the
+/// caller ([`open_with`](Self::open_with)): what an adapter really does with a transfer is
+/// not something the kernel reports. An operation the capabilities rule out is refused before
+/// any ioctl ([`I2cDevError::Refused`], kind `Unsupported`), as the `DdcBus` contract asks.
 ///
 /// Every operation is one `I2C_RDWR` ioctl, one transaction: the kernel holds the adapter
 /// for it. A `read_segmented` the capabilities split into pieces
@@ -78,9 +79,42 @@ impl I2cBus for LinuxI2CBus {
 pub struct I2cDevBus<B: I2cBus = LinuxI2CBus> {
     bus: Mutex<B>,
     capabilities: DdcCapabilities,
+    /// The adapter's sysfs name, when `open` read it.
+    adapter: Option<String>,
+    /// The table's entry, when the adapter is in it: how its errnos read.
+    known: Option<Known>,
 }
 
 impl I2cDevBus<LinuxI2CBus> {
+    /// Open the given `/dev/i2c-N` device as a DDC bus, with the capabilities the
+    /// [`adapters`] table gives for the adapter's name
+    /// (`/sys/class/i2c-dev/i2c-N/name`), or [`SMBUS_LEVEL`] for an adapter not in it or a
+    /// name that cannot be read.
+    ///
+    /// For an adapter in the table, its errnos read as its driver uses them: `EAGAIN` is a
+    /// timeout where the driver returns it for one (dw-hdmi, Inno, i915 after a GMBUS
+    /// timeout), and `EINVAL`, with which these drivers refuse what they cannot do, is
+    /// `Unsupported`.
+    ///
+    /// # Errors
+    ///
+    /// [`I2cDevError::DeviceOpenFailed`] if the device cannot be opened.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, I2cDevError> {
+        Self::open_in(Path::new("/sys/class/i2c-dev"), path.as_ref())
+    }
+
+    /// [`open`](Self::open), with the adapter's name read under `sysfs_root` instead of
+    /// `/sys/class/i2c-dev`. Used in unit tests.
+    pub(crate) fn open_in(sysfs_root: &Path, path: &Path) -> Result<Self, I2cDevError> {
+        let adapter = adapter_name(sysfs_root, path);
+        let known = adapter.as_deref().and_then(adapters::known);
+        let capabilities = known.map_or(SMBUS_LEVEL, |known| known.capabilities);
+        let mut bus = Self::open_with(path, capabilities)?;
+        bus.adapter = adapter;
+        bus.known = known;
+        Ok(bus)
+    }
+
     /// Open the given `/dev/i2c-N` device as a DDC bus with `capabilities`, the caller's
     /// assertion of what the adapter does with a transfer.
     ///
@@ -108,6 +142,29 @@ impl<B: I2cBus> I2cDevBus<B> {
         Self {
             bus: Mutex::new(bus),
             capabilities,
+            adapter: None,
+            known: None,
+        }
+    }
+
+    /// The adapter's sysfs name, as [`open`](I2cDevBus::open) read it; `None` when it could
+    /// not be read, or the bus was opened with [`open_with`](I2cDevBus::open_with).
+    pub fn adapter(&self) -> Option<&str> {
+        self.adapter.as_deref()
+    }
+
+    /// An errno as a class, as this adapter's driver uses it.
+    fn errno_kind(&self, errno: i32) -> I2cErrorKind {
+        match (errno, self.known) {
+            (
+                libc::EAGAIN,
+                Some(Known {
+                    eagain: Eagain::Timeout,
+                    ..
+                }),
+            ) => I2cErrorKind::ClockStretchTimeout,
+            (libc::EINVAL, Some(_)) => I2cErrorKind::Unsupported,
+            _ => map_errno(errno),
         }
     }
 
@@ -142,7 +199,7 @@ impl<B: I2cBus> I2cDevBus<B> {
             .transfer(messages)
             .map_err(|e| I2cDevError::Transfer {
                 address,
-                kind: map_errno(to_raw_errno(e)),
+                kind: self.errno_kind(to_raw_errno(e)),
             })?;
         if done < sent {
             return Err(I2cDevError::IncompleteTransfer { sent, done });
@@ -157,6 +214,18 @@ impl<B: I2cBus> I2cDevBus<B> {
             Err(refused(Refusal::Unreachable { address }))
         }
     }
+}
+
+/// The sysfs name of the adapter behind `path` (`…/i2c-N`), from `sysfs_root/i2c-N/name`.
+fn adapter_name(sysfs_root: &Path, path: &Path) -> Option<String> {
+    let file = path.file_name()?.to_str()?;
+    let index = file.strip_prefix("i2c-")?;
+    if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let name: PathBuf = sysfs_root.join(file).join("name");
+    let name = std::fs::read_to_string(name).ok()?;
+    Some(name.trim_end_matches('\n').to_string())
 }
 
 fn refused(reason: Refusal) -> I2cDevError {
