@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **rustdoc runs with every feature and `-D warnings`**, as docs.rs builds, in CI and in
   the publish workflow's `verify` job: `-D missing_docs` alone let broken intra-doc links
   through.
+- **The MSRV is checked**: an `MSRV` job in CI and in the publish workflow (which waits for
+  it) runs the tests on the `rust-version` from `Cargo.toml` (1.85) with
+  `cargo msrv verify`; the crate declared it, and nothing checked it.
 
 ## [0.4.0] - 2026-11-03
 
