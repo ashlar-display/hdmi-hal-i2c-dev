@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   percentage points, as CI checks it, not 0.1%.
 - **The coverage job runs cargo with `--locked`**, as the other jobs do, so it measures
   the build the tests ran; `doc/setup.md`'s commands match.
+- **The docs give the coverage tolerance as 0.1 percentage points everywhere** (as CI
+  checks it, not 0.1%), and `doc/setup.md` installs the cargo-msrv version CI pins
+  (0.19.6).
 
 ## [0.4.0] - 2026-11-03
 
