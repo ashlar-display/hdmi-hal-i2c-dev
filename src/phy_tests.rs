@@ -161,3 +161,49 @@ fn recorded_calls_compare_as_a_sequence() {
         ]
     );
 }
+
+#[test]
+fn tmds_calls_forward_their_variants() {
+    use hdmi_hal::phy::{TmdsClockRatio, TmdsPhyConfig, TmdsVideo};
+
+    let config = TmdsPhyConfig::new(
+        594_000,
+        TmdsClockRatio::Div40,
+        TmdsVideo::new(
+            594_000,
+            hdmi_hal::ColorBitDepth::Depth8,
+            hdmi_hal::ColorFormat::Rgb444,
+        ),
+    );
+    let mut calls = Vec::new();
+    {
+        let mut phy = StubPhy::new(|call| calls.push(call));
+        phy.stop_output().unwrap();
+        phy.configure(config).unwrap();
+        phy.set_scrambling(true).unwrap();
+        phy.start_output().unwrap();
+    }
+    assert_eq!(
+        calls,
+        [
+            PhyCall::StopOutput,
+            PhyCall::Configure(config),
+            PhyCall::SetScrambling(true),
+            PhyCall::StartOutput,
+        ]
+    );
+}
+
+#[test]
+fn capabilities_are_the_defaults_or_what_the_caller_sets() {
+    let phy = StubPhy::new(|_| {});
+    assert_eq!(
+        phy.capabilities(),
+        StubPhy::<fn(PhyCall)>::DEFAULT_CAPABILITIES
+    );
+    assert!(phy.capabilities().scrambles_at_low_rate());
+    let plain = hdmi_hal::phy::TmdsPhyCapabilities::new(340_000);
+    let phy = StubPhy::new(|_| {}).with_capabilities(plain);
+    assert_eq!(phy.capabilities(), plain);
+    assert!(!phy.capabilities().scrambling);
+}
