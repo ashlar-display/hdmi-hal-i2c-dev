@@ -22,8 +22,10 @@ is fine.
 
 ## Coding standards
 
-- Run `cargo fmt` and `cargo clippy -- -D warnings` before pushing.
-- Public items need rustdoc comments (`cargo rustdoc -- -D missing_docs` must pass).
+- Run `cargo fmt` and `cargo clippy --all-targets -- -D warnings` before pushing
+  ([doc/setup.md](doc/setup.md) lists the commands CI runs).
+- Public items need rustdoc comments, and intra-doc links must resolve
+  (`cargo rustdoc --all-features -- -D warnings` must pass).
 - `#![forbid(unsafe_code)]` is enforced; no unsafe code in this crate.
 - This crate is `std`-only and Linux-only. There is no `no_std` or async path.
 
@@ -39,7 +41,9 @@ is fine.
 - Write commit messages in the imperative mood ("Add support for …", not "Added …").
 - Keep commits logically atomic. A PR that touches three unrelated things should be
   three commits (or three PRs).
-- CI must be green before a PR can merge: fmt, clippy, docs, and Tier 1 tests.
+- CI must be green before a PR can merge: fmt, clippy (the Tier 2 tests included), docs,
+  the Tier 1 tests, the same tests on the MSRV (Rust 1.85), and coverage must not drop more
+  than 0.1% below the baseline (stored in `.coverage-baseline`).
 
 ## Publishing and upstream dependencies
 

@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uncovered (it did so in other Ashlar crates after the update to Rust 1.100).
 - **`doc/setup.md` lists the checks CI runs**: clippy over all targets (once with the
   `integration` feature), rustdoc with `-D warnings`, and the MSRV check.
+- **`CONTRIBUTING.md` matches the CI checks**: clippy over all targets (the Tier 2 tests
+  included), rustdoc with `-D warnings`, the MSRV and coverage.
 
 ## [0.4.0] - 2026-11-03
 
