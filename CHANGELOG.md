@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Requires hdmi-hal's PHY traits by link mode.** `StubPhy` implements `FrlPhy`,
   hdmi-hal's new name for `HdmiPhy`, and `set_scrambling` is now part of its `TmdsPhy`
   implementation, as hdmi-hal moved it there.
+- **`I2cDevTransport` is removed: SCDC is `hdmi-hal`'s `ScdcOverDdc` over an `I2cDevBus`.**
+  `ScdcOverDdc::new(&bus)` replaces `I2cDevTransport::open`, and `ScdcOverDdc::bytewise(&bus)`
+  replaces `open_bytewise`; the EDID reader shares the same bus. `I2cDevBus::open` uses
+  `I2C_RDWR`, so an SMBus-only adapter, which the transport served, needs
+  `I2cDevBus::open_smbus`. A block read's limit is now the bus's capabilities (32 bytes at
+  SMBus level), and a longer block is `Refused` with `Refusal::TooLong`. With the transport
+  go `transport::MAX_BLOCK_LEN` and the errors only it returned: `I2cDevError::Transaction`,
+  `BlockReadTooLong` and `UnexpectedBlockLength`, `I2cTransactionError` and `MessagePhase`.
+  A failed operation is `I2cDevError::Transfer`, with its address; a block of another length
+  than asked is `Transfer` with `Unknown { errno: EIO }`, the buffer unchanged.
 
 ### Added
 
@@ -22,11 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under (`SMBUS_LEVEL` for one not in it), and reads `EAGAIN` and `EINVAL` as their drivers
   mean them; `open_with(path, capabilities)` takes the capabilities from the caller;
   `open_smbus(path)` makes every operation an SMBus call, for an adapter without plain I²C
-  such as `i2c-stub` (`I2cErrorKind::NoDevice` for its `ENODEV`, `NoAcknowledge(Address)`);
-  what
-  they rule out, a write of no
-  bytes, an E-DDC read past its segment and a message over the kernel's 8192 bytes are
-  refused before any ioctl (`I2cDevError::Refused` with a `Refusal`). A failed transfer is
+  such as `i2c-stub` (`I2cErrorKind::NoDevice` for its `ENODEV`, `NoAcknowledge(Address)`).
+  What the capabilities rule out, a write of no bytes, an E-DDC read past its segment and a
+  message over the kernel's 8192 bytes are refused before any ioctl (`I2cDevError::Refused` with a `Refusal`). A failed transfer is
   `I2cDevError::Transfer` with its address, one the kernel cut short
   `IncompleteTransfer`; a poisoned lock is recovered.
 - **`edid::read_edid`**, reading a sink's EDID over any `hdmi-hal` `DdcBus` as piaf's
@@ -39,14 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Configure`, `SetScrambling`, `StartOutput` and `StopOutput`, and `capabilities` reports
   `StubPhy::DEFAULT_CAPABILITIES` (600 MHz, a scrambler, low-rate scrambling) or what
   `with_capabilities` sets.
-- **`DdcError` for `I2cDevError` and `I2cTransactionError`**, as hdmi-hal now requires of a
-  transport's error: `ENXIO` is `NoAcknowledge(Unknown)`, a NACKed data byte
-  `NoAcknowledge(Data)`, `EAGAIN` and `EBUSY` `Busy`, `ETIMEDOUT` `Timeout`, `ESHUTDOWN` and
-  `ENODEV` `Detached`, `EOPNOTSUPP` and a block read too long for one transaction
-  `Unsupported`, and the rest `Other`.
+- **`DdcError` for `I2cDevError`**, as hdmi-hal now requires of a bus's error: `ENXIO` is
+  `NoAcknowledge(Unknown)`, a NACKed data byte `NoAcknowledge(Data)`, `EAGAIN` and `EBUSY`
+  `Busy`, `ETIMEDOUT` `Timeout`, `ESHUTDOWN` and `ENODEV` `Detached`, `EOPNOTSUPP` and a
+  refusal `Unsupported`, and the rest `Other`.
 
 ### Internal
 
+- The `i2c-stub` tests run SCDC as `ScdcOverDdc` over a bus opened with `open_smbus`
+  (`tests/scdc.rs`, formerly `tests/transport.rs`), and their NACK tests are filtered by
+  `no_chip`, not `slave_not_registered`.
 - CI fails on `main`, and the publish workflow before anything is built, when `Cargo.toml`
   has a `[patch]` section: `cargo package` drops it, so a release built with one would not
   build from crates.io.

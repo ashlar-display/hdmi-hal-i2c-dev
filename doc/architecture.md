@@ -8,17 +8,18 @@
 **Protocol validation.** It is the hardware validation backend for the protocol crates —
 the bridge from pure Rust trait implementations to a real HDMI sink on real hardware,
 without requiring a kernel module. `culvert` and `plumbob` can be exercised against a real
-sink by supplying an `I2cDevTransport` in place of any other `ScdcTransport`.
+sink by supplying `hdmi-hal`'s `ScdcOverDdc` over an `I2cDevBus` in place of any other
+`ScdcTransport`.
 
 **Diagnostic tooling.** It is the hardware access layer for any tool that needs to inspect
 or manipulate SCDC state directly — register dumps, scrambling state inspection, CED
 counter monitoring, link status queries. A tool author who has no interest in concordance
-or plumbob can depend on this crate alone and use `I2cDevTransport` as a raw conduit to
-the SCDC register map.
+or plumbob can depend on this crate alone and use `ScdcOverDdc` over an `I2cDevBus` as a
+raw conduit to the SCDC register map, and read the EDID over the same bus.
 
-`ScdcTransport` is implemented by opening the DDC adapter device for an HDMI connector
-and issuing raw I²C transactions to the SCDC slave address (0x54); its error classifies
-itself as a `DdcError`. `FrlPhy` and `TmdsPhy` are implemented by `StubPhy`, a generic stub that accepts all PHY calls, forwards each as a
+`DdcBus` is implemented by `I2cDevBus`, which opens the DDC adapter device for an HDMI
+connector and issues I²C transfers to the addresses the adapter reaches; its error
+classifies itself as a `DdcError`. SCDC (0x54) is `hdmi-hal`'s `ScdcOverDdc` over that bus. `FrlPhy` and `TmdsPhy` are implemented by `StubPhy`, a generic stub that accepts all PHY calls, forwards each as a
 `PhyCall` event to a caller-supplied callback, and returns `Ok(())`. PHY programming from
 Linux userspace has no standard kernel interface; the stub is sufficient to run the full
 FRL training state machine and validate SCDC register logic against a real sink, and lets
@@ -34,7 +35,6 @@ validation, and diagnostic backend, intended for use before and alongside kernel
 
 `hdmi-hal-i2c-dev` covers:
 
-- `I2cDevTransport` — implements `ScdcTransport` over a `/dev/i2c-N` device file,
 - `I2cDevBus` — implements `DdcBus` over a `/dev/i2c-N` device file with `I2C_RDWR`,
 - `StubPhy<F>` — implements `FrlPhy` and `TmdsPhy` with a caller-supplied callback;
   forwards each PHY call as a `PhyCall` event and returns `Ok(())`,
@@ -50,11 +50,6 @@ The following are out of scope:
 - **PHY programming** — there is no standard Linux userspace interface for HDMI PHY
   register access. `StubPhy` stubs all methods. A real PHY backend, if one is ever needed
   in userspace, is a separate crate.
-- **EDID reads** — EDID is read over the DDC bus at I²C address 0x50, not 0x54. This crate
-  only implements `ScdcTransport`, which operates against the SCDC slave at 0x54. EDID
-  parsing belongs in `piaf`; reading the raw bytes is the concern of whatever integration
-  layer calls `piaf`. (Planned to change with the `DdcBus` implementation, which reads EDID
-  over E-DDC: see the [roadmap](roadmap.md).)
 - **CEC** — unrelated to this crate's scope.
 - **Multi-connector enumeration** — `connector_ddc_adapter` resolves a single named
   connector. Enumerating all connectors on a system is the caller's responsibility.
@@ -83,12 +78,12 @@ hdmi-hal  ──►  hdmi-hal-i2c-dev
 i2cdev    ──►  hdmi-hal-i2c-dev
 ```
 
-- `hdmi-hal` — `ScdcTransport`, `DdcBus`, `DdcError`, `FrlPhy`, `TmdsPhy`, `EqParams`,
+- `hdmi-hal` — `DdcBus`, `DdcError`, `ScdcTransport`, `ScdcOverDdc`, `FrlPhy`, `TmdsPhy`, `EqParams`,
   `LanePatterns`, `FrlOutput`, `TmdsPhyConfig`, `TmdsPhyCapabilities`
 - `piaf` — `read::EdidReadPlan`, the I/O-free plan `read_edid` runs: which block to read next,
   how many the EDID has, and the checks on each block
 - `i2cdev` — safe Rust wrappers over the Linux `i2c-dev` kernel interface; provides the
-  `I2C_SMBUS` ioctl binding that backs `I2cDevTransport`. This is what allows
+  `I2C_RDWR`, `I2C_SLAVE` and `I2C_SMBUS` ioctl bindings that back `I2cDevBus`. This is what allows
   `#![forbid(unsafe_code)]` to hold: all unsafe is contained inside `i2cdev`.
 - `std` — file I/O, sysfs path resolution
 
@@ -136,11 +131,11 @@ diagnostics. The function does not panic on malformed targets.
 pub fn connector_ddc_adapter(connector: &str) -> Result<PathBuf, I2cDevError>;
 ```
 
-The typical call sequence to build a transport for a known connector is:
+The typical call sequence to open the bus of a known connector is:
 
 ```rust
 let path = connector_ddc_adapter("card0-HDMI-A-1")?;
-let transport = I2cDevTransport::open(path)?;
+let bus = I2cDevBus::open(path)?;
 ```
 
 **Hotplug sensitivity.** The `ddc` symlink is created by the kernel when a sink is
@@ -151,115 +146,17 @@ need to distinguish them must monitor connector state through other means (e.g. 
 before calling this function.
 
 **TOCTOU.** There is an inherent window between `connector_ddc_adapter` returning a path
-and `I2cDevTransport::open` consuming it. On systems with dynamic adapter numbering, the
+and `I2cDevBus::open` consuming it. On systems with dynamic adapter numbering, the
 adapter index resolved by `connector_ddc_adapter` may no longer refer to the DDC bus by
 the time `open` is called — if an unrelated I²C adapter appeared or disappeared in the
 interim, `/dev/i2c-N` may have been reassigned. This window cannot be closed in userspace.
 Callers that require precise control over open timing — for example, a privileged parent
-opening the device before dropping privileges — should open the file themselves and use
-`LinuxI2CDevice::new` directly with the raw file descriptor.
+opening the device before dropping privileges — need a constructor from an open file, which
+`i2cdev` does not offer yet (see the [roadmap](roadmap.md)).
 
 ---
 
 ## Key Types
-
-### `I2cDevTransport`
-
-Implements `ScdcTransport` for a `/dev/i2c-N` device. On construction it opens the device
-file and sets the slave address to 0x54 via `I2C_SLAVE`; each `read` and `write` call
-issues an SMBus transaction to the SCDC slave address.
-
-The SCDC register protocol is:
-- **Write:** `smbus_write_byte_data(reg, value)` — an `I2C_SMBUS` ioctl issuing a two-byte
-  write containing the register address byte followed by the value byte.
-- **Read:** `smbus_read_byte_data(reg)` — an `I2C_SMBUS` ioctl issuing a combined
-  write-then-read: the register address byte is written, then one byte is read back, all
-  within a single ioctl call.
-- **Block read** (`read_block`): `smbus_read_i2c_block_data(reg, len)` — an `I2C_SMBUS`
-  ioctl with `I2C_SMBUS_I2C_BLOCK_DATA`: the register address byte is written, then, after
-  a repeated START, `len` bytes are read, all within a single ioctl call. At most 32 bytes
-  (`I2C_SMBUS_BLOCK_MAX`, exported as `transport::MAX_BLOCK_LEN`); a longer buffer is
-  `I2cDevError::BlockReadTooLong` before any ioctl, never split into several reads. An
-  empty buffer is `Ok` without an ioctl; a result of another length is
-  `I2cDevError::UnexpectedBlockLength`, never padded. Past 0xFF the result is the sink's on
-  real hardware; `i2c-stub` ends the read at 0xFF (`UnexpectedBlockLength`).
-- **Block read, opened with `open_bytewise`**: `read_block_bytewise`, one byte-data read
-  per register, for an adapter without the SMBus I2C block read. Not one transaction, no
-  length limit, wrapping past 0xFF.
-
-The operations are issued via `LinuxI2CDevice` from `i2cdev`, each as one ioctl. The kernel
-holds the adapter for the duration of the ioctl, so another process's transfer cannot land
-inside it. What reaches the wire is the adapter driver's: this crate controls the ioctl, not
-the bus. For the DRM DDC adapters checked (`i915`'s GMBUS and `amdgpu`'s DC, the latter on
-hardware too) a block read is one transaction on the wire, the offset write and a
-repeated-START read; the Synopsys DesignWare HDMI controller's I²C master (`dw-hdmi`,
-`dw-hdmi-qp`) reads one byte per hardware operation, each with its own offset write, while
-advertising `I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL` (`dw_hdmi_i2c_read`), so there a block
-read returns `Ok` with its registers read one at a time. Other adapters are unchecked.
-That matters for registers read together, such as the CED counters, which may increment
-between two reads: culvert's CED checksum is the one protection that holds on every
-adapter.
-
-SMBus byte-data semantics are equivalent to raw I²C for SCDC's single-byte register model,
-and work on both `i2c-stub` (for integration tests) and real DDC adapters.
-
-**Why the block read is an SMBus I2C block read.** `hdmi-hal`'s `read_block` contract asks
-for one combined transfer to the layer below, or an error. Two ioctls give one: `I2C_RDWR` with a write message and a
-read message, or the SMBus I2C block read. Both put the same transaction on the wire — the
-offset written, a repeated START, the bytes read — which is what the kernel's own
-`drm_scdc_read` and embedded `I2c::write_read` backends issue. `I2C_RDWR` has no 32-byte
-limit, but needs `I2C_FUNC_I2C`, which `i2c-stub` does not offer: the Tier 2 tests could
-not run it, and on an adapter without it `read_ltp_requests`, polled in LTS:3, would fail
-where byte reads work today. The SMBus I2C block read is in `i2c-stub`'s default
-functionality and in `I2C_FUNC_SMBUS_EMUL`, which the DRM DDC adapters advertise (`i915`'s
-GMBUS and `amdgpu`'s DC: `I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL`); on them the kernel
-emulates it as the offset write and a repeated-START read. Its 32-byte limit is what
-`read_block`'s contract allows a backend to document; culvert's block reads are 2 and 9
-bytes, and a register dump reads the map in parts. There is no fallback to one register at
-a time: an adapter that cannot do the block read returns the ioctl's error, typically
-`EOPNOTSUPP`, which is `I2cErrorKind::Unsupported`.
-
-The trade-off is accepted, not avoided: `I2C_RDWR` would fail on adapters without
-`I2C_FUNC_I2C`, and the SMBus I2C block read fails on SMBus-only adapters without
-`I2C_FUNC_SMBUS_READ_I2C_BLOCK`, where byte reads worked before; on those, LTS:3 now fails.
-The error surfaces at the first block read, not at open: an up-front check needs the
-`I2C_FUNCS` ioctl, which `i2cdev` 0.6.2 does not expose, and `#![forbid(unsafe_code)]` rules
-out issuing it here (a functionality check at open is planned once `i2cdev` offers one). For
-such an adapter, `I2cDevTransport::open_bytewise` reads a block a register at a time, as an
-explicit choice.
-
-```rust
-pub struct I2cDevTransport { /* LinuxI2CDevice in Mutex */ }
-
-impl I2cDevTransport {
-    /// Open the given `/dev/i2c-N` device for use as an SCDC transport.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
-    /// The same, with `read_block` one register at a time (not one transaction).
-    pub fn open_bytewise(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
-}
-
-impl ScdcTransport for I2cDevTransport {
-    type Error = I2cDevError;
-
-    fn read(&self, reg: u8) -> Result<u8, I2cDevError>;
-    fn write(&mut self, reg: u8, value: u8) -> Result<(), I2cDevError>;
-    fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), I2cDevError>;  // ≤ 32 bytes (`open`)
-}
-
-/// The longest block read.
-pub const MAX_BLOCK_LEN: usize = 32;
-```
-
-**Error recovery policy.** A `Transaction` error does not invalidate the transport. The
-file descriptor remains open and the next call may succeed — transient bus conditions
-(glitches, brief clock stretching) do not corrupt any transport state. The caller may
-retry immediately.
-
-If errors persist, the sink has most likely disconnected. There is no `is_connected()`
-method and, due to the `amdgpu` driver collapsing all transaction failures to `EIO`, a
-disconnect is indistinguishable from a persistent bus error at the API level. The
-caller should drop the transport and reconstruct it — via `connector_ddc_adapter` +
-`open`, or via `from_file` if controlling the fd lifecycle externally.
 
 ### `I2cDevBus`
 
@@ -333,6 +230,13 @@ impl DdcBus for I2cDevBus { type Error = I2cDevError; /* … */ }
   (`I2cErrorKind::NoDevice`, `NoAcknowledge(Address)`); a block read that returns another
   length than asked is `EIO`, with the buffer left as it was. The public type stays
   `I2cDevBus`: its backend, `I2C_RDWR` or SMBus, is the opaque `bus::Backend`.
+- **A poisoned lock is recovered,** not a panic: the file descriptor is still good, and a
+  transfer that was cut short is the kernel's to have finished or not.
+- **A failed transfer does not invalidate the bus.** The file descriptor remains open and
+  the next call may succeed; transient bus conditions (glitches, brief clock stretching)
+  leave no state behind, and the caller may retry. If errors persist, the sink has most
+  likely disconnected: `amdgpu` collapses every failure to `EIO`, so a disconnect cannot
+  be told from a persistent bus error. Drop the bus and open it again.
 
 ### The `adapters` table
 
@@ -357,8 +261,35 @@ name, so the table takes the smaller one. Adapters bit-banged through `i2c-algo-
 `adapters::SMBUS_LEVEL`, for an adapter not in the table, is what the SMBus calls of the
 past could do: `write` 33, `write_read` 1 + 32, `read` 1, E-DDC segment 0 only in 32-byte
 pieces.
-- **A poisoned lock is recovered,** not a panic: the file descriptor is still good, and a
-  transfer that was cut short is the kernel's to have finished or not.
+
+### SCDC over the bus
+
+SCDC is `hdmi-hal`'s `ScdcOverDdc` over an `I2cDevBus`, borrowed (`&I2cDevBus`) so that the
+EDID reader and SCDC share the bus:
+
+```rust
+let bus = I2cDevBus::open(path)?;
+let scdc = ScdcOverDdc::new(&bus);       // `read_block` in one transfer
+let scdc = ScdcOverDdc::bytewise(&bus);  // `read_block` a register at a time
+```
+
+- **Register read:** a `write_read` of the offset and one byte. **Write:** a `write` of
+  offset and value. **Block read:** one `write_read` of the offset and the block, within the
+  bus's capabilities: at `SMBUS_LEVEL` up to 32 bytes, so a longer block is refused, not
+  split; on an `I2C_RDWR` adapter in the table, as long as its `write_read` allows.
+- **Which constructor.** `new` needs a `write_read` of at least 16 bytes, `bytewise` of
+  one; both need SCDC reachable and a two-byte `write`, and hand the bus back otherwise. An
+  adapter that is only an EDID engine (Inno, RK3066, Oaktrail) has no SCDC: both refuse it.
+  `bytewise` is not one transaction per block, so it is the caller's explicit choice.
+- **One transfer is not always one transaction on the wire.** The kernel holds the adapter
+  for the duration of the ioctl, so another process's transfer cannot land inside it, but
+  what reaches the wire is the adapter driver's. On `i915`'s GMBUS and `amdgpu`'s DC a block
+  read is one transaction, the offset write and a repeated-START read; the Synopsys
+  DesignWare HDMI controller's I²C master (`dw-hdmi`, `dw-hdmi-qp`) reads one byte per
+  hardware operation, each with its own offset write, and its capabilities say so
+  (`splits_reads`). That matters for registers read together, such as the CED counters,
+  which may increment between two reads: culvert's CED checksum is the one protection that
+  holds on every adapter.
 
 ### `StubPhy<F>`
 
@@ -501,35 +432,27 @@ pub enum I2cDevError {
     DdcAdapterIndexUnparseable { symlink_target: PathBuf },
     /// The `/dev/i2c-N` device could not be opened.
     DeviceOpenFailed { path: PathBuf, source: io::Error },
-    /// An I²C transaction failed.
-    Transaction(I2cTransactionError),
-    /// A block read longer than `MAX_BLOCK_LEN`; nothing was read.
+    /// An `I2C_RDWR` transfer, or an SMBus call, failed.
     #[non_exhaustive]
-    BlockReadTooLong { register: u8, len: usize, max: usize },
-    /// The kernel returned another number of bytes than the block read asked for: an
-    /// adapter driver reporting another length, or `i2c-stub` ending a read at 0xFF.
+    Transfer { address: u8, kind: I2cErrorKind },
+    /// The kernel executed fewer of a transfer's messages than were sent.
     #[non_exhaustive]
-    UnexpectedBlockLength { register: u8, requested: usize, returned: usize },
+    IncompleteTransfer { sent: u32, done: u32 },
+    /// Refused before any ioctl.
+    #[non_exhaustive]
+    Refused { reason: Refusal },
 }
 
-/// The phase and kind of an I²C transaction failure.
-pub struct I2cTransactionError {
-    pub phase: MessagePhase,
-    pub kind: I2cErrorKind,
-}
-
-/// Which phase of the SCDC transaction failed.
-///
-/// The current SMBus-backed implementation always reports `Write` — the
-/// `I2C_SMBUS` ioctl does not distinguish between the outbound address byte
-/// and the inbound data byte when returning an error. `Read` is retained for
-/// future implementations that use raw `I2C_RDWR` and can isolate the failing
-/// message by index.
-pub enum MessagePhase {
-    /// The write-phase message failed (register address byte, or write data).
-    Write { register: u8 },
-    /// The read-phase message failed (data retrieval).
-    Read { register: u8 },
+/// Why an operation was refused: a write of no bytes, a message too long, an address,
+/// E-DDC target or segment the capabilities do not reach, or a read past the segment.
+#[non_exhaustive]
+pub enum Refusal {
+    EmptyWrite,
+    TooLong { len: usize, max: usize },
+    Unreachable { address: u8 },
+    Target { address: u8 },
+    Segment { segment: u8 },
+    PastSegmentEnd { offset: u8, len: usize },
 }
 
 /// The class of I²C bus condition that caused the failure.
@@ -550,22 +473,21 @@ pub enum I2cErrorKind {
     BusBusy,
     /// An unexpected START or STOP condition was observed on the bus (`EPROTO`).
     BusProtocolError,
-    /// The I²C adapter was suspended or removed (`ESHUTDOWN`/`ENODEV`). `ENODEV` can also
-    /// mean no device at all: `i2c-stub` returns it for an address with no chip.
+    /// The I²C adapter was suspended or removed (`ESHUTDOWN`/`ENODEV`).
     AdapterGone,
-    /// The adapter does not support the operation (`EOPNOTSUPP`): for a block read, no
-    /// SMBus I2C block read; use `open_bytewise`.
+    /// No chip at the address: `ENODEV` on a bus opened with `open_smbus`, as `i2c-stub`
+    /// reports it.
+    NoDevice,
+    /// The adapter does not support the operation (`EOPNOTSUPP`).
     Unsupported,
     /// An errno that does not map to any known I²C condition.
     Unknown { errno: i32 },
 }
 ```
 
-The two block-read errors are `#[non_exhaustive]` per variant, so a later release can add a
-field to either. A driver that reports more than 33 bytes for a block read does not reach
-`UnexpectedBlockLength`: `i2cdev` indexes its 34-byte buffer by the reported length and
-panics, while the transport's lock is held, so every later call on the transport panics
-too (a poisoned lock); open a new transport.
+In SMBus mode, a driver that reports more than 32 bytes for an I²C block read makes
+`i2cdev` panic (it indexes its 34-byte buffer by the reported length); the bus's lock
+recovers from it, so later calls are unaffected.
 
 ---
 
@@ -573,14 +495,14 @@ too (a poisoned lock); open a new transport.
 
 ### Below: Linux `i2c-dev` kernel interface
 
-`I2cDevTransport` is backed by `ioctl(fd, I2C_SLAVE, 0x54)` on open (to set the slave
-address) and `ioctl(fd, I2C_SMBUS, ...)` per transaction, against an open `/dev/i2c-N`
-file descriptor. The `i2c-dev` kernel module must be loaded; on most Linux desktop systems
+`I2cDevBus` is backed by `ioctl(fd, I2C_RDWR, ...)` per transfer, or in SMBus mode by
+`ioctl(fd, I2C_SLAVE, address)` when the address changes and `ioctl(fd, I2C_SMBUS, ...)` per
+call, against an open `/dev/i2c-N` file descriptor. The `i2c-dev` kernel module must be loaded; on most Linux desktop systems
 it is either built in or loaded automatically. The calling process needs read/write
 permission on the device node (typically via the `i2c` group).
 
-The SCDC slave address (0x54) is fixed by HDMI 2.1. This crate does not
-expose it as a parameter.
+The SCDC slave address (0x54) is fixed by HDMI 2.1; `ScdcOverDdc` addresses it, and no
+caller passes it.
 
 #### errno mapping and the `amdgpu` limitation
 
@@ -596,7 +518,7 @@ shows that all `i2c_channel_operation_result` values — `NO_RESPONSE` (NACK), `
 layer boundary. `amdgpu_dm_i2c_xfer` maps `false` unconditionally to `-EIO`. Every
 transaction failure surfaces as `EIO` regardless of the actual bus condition.
 
-On `amdgpu`, `I2cTransactionError::kind` will always be `Unknown { errno: EIO }`.
+On `amdgpu`, a failed transfer's `I2cErrorKind` will always be `Unknown { errno: EIO }`.
 The named variants (`AddressNack`, `Timeout`, etc.) are unreachable on this hardware. This
 is a driver deficiency — the driver has the information internally and discards it — not a
 kernel interface limitation. The richer variant set is retained because it is correct per
@@ -604,8 +526,8 @@ the kernel's documented vocabulary and meaningful on compliant adapters.
 
 ### Above: `hdmi-hal` traits
 
-`I2cDevTransport` satisfies `ScdcTransport` as defined in `hdmi-hal`. `StubPhy<F>`
-satisfies `FrlPhy` and `TmdsPhy`. Callers construct these types and pass them — by value or
+`I2cDevBus` satisfies `DdcBus` as defined in `hdmi-hal`, and `ScdcOverDdc` over it
+`ScdcTransport`. `StubPhy<F>` satisfies `FrlPhy` and `TmdsPhy`. Callers construct these types and pass them — by value or
 by `&mut` reference — to any API that accepts the corresponding trait. Nothing in this crate
 is specific to `culvert`, `plumbob` or `spiritlevel`; those crates accept any
 `ScdcTransport`, `FrlPhy` and `TmdsPhy` respectively.
@@ -614,7 +536,8 @@ The typical end-to-end validation setup:
 
 ```rust
 let path = connector_ddc_adapter("card0-HDMI-A-1")?;
-let transport = I2cDevTransport::open(path)?;
+let bus = I2cDevBus::open(path)?;
+let transport = ScdcOverDdc::new(&bus).expect("the adapter reaches SCDC");
 let scdc = Scdc::new(transport);                            // culvert
 let phy = StubPhy::new(|call| eprintln!("{call:?}"));      // log PHY calls to stderr
 let mut trainer = FrlTrainer::new(scdc, phy);               // plumbob
@@ -649,51 +572,49 @@ configurable root, then calls `connector_ddc_adapter` with that root substituted
 - `DdcAdapterIndexUnparseable` when the symlink target is malformed.
 
 **`I2cErrorKind` mapping** is tested as a unit test against the internal function that
-maps `LinuxI2CError` values to `I2cTransactionError`. Specific `LinuxI2CError::Errno`
-values are constructed directly and the output variant is asserted. This covers every
+maps errnos to `I2cErrorKind`. Specific errno values are passed directly and the output
+variant is asserted. This covers every
 named `I2cErrorKind` variant and the `Unknown { errno }` fallback without kernel
 involvement.
 
-**`read_block`** is tested against an in-memory device behind the crate-private
-`SmbusDevice` seam, which records each block read it is asked for: consecutive registers in
-one ioctl, the 32-byte maximum in one, an empty buffer with none, a 33-byte buffer refused
-with none, a result of another length an error with the buffer unchanged, a read from 0xF0
-ending at 0xFF as on `i2c-stub`, `EOPNOTSUPP` as `Unsupported` with no fallback, and ioctl
-errors mapped as for `read`; and, opened bytewise, one byte-data read per register, no
-length limit, wrapping past 0xFF, and stopping at the first error.
+**`I2cDevBus`** is tested through crate-private seams: a mock of the `I2C_RDWR` transfer
+that records each message with its address, and a mock register file behind the SMBus
+calls. Each operation's messages or calls, every refusal, the error mapping by adapter, and
+`open` against a synthetic sysfs tree are covered; see [`testing.md`](testing.md).
 
 No kernel involvement. Runs in CI on any Linux host.
 
 ### Tier 2: `i2c-stub` integration tests
 
-**`I2cDevTransport`** is tested against the Linux `i2c-stub` kernel module, which
-registers a fake I²C device at a specified address and exposes it as a real `/dev/i2c-N`
-device node. Transactions go through the full `I2C_SMBUS` ioctl path; the stub responds
-to SMBus byte-data reads and I2C block reads and records writes.
+**`I2cDevBus` in SMBus mode**, and SCDC over it, are tested against the Linux `i2c-stub`
+kernel module, which registers a fake I²C device at a specified address and exposes it as a
+real `/dev/i2c-N` device node. Calls go through the full `I2C_SMBUS` ioctl path; the stub
+responds to SMBus byte-data reads and I2C block reads and records writes.
 
 This tier validates:
-- correct SMBus byte-data read (atomic combined write-then-read in a single ioctl),
-- correct SMBus byte-data write,
-- correct SMBus I2C block read (`read_block`): 9 bytes (the CED block), 2 bytes and the
-  32-byte maximum, each in one ioctl, and a 33-byte read refused,
-- slave address 0x54 is set at device open time,
-- an error is produced when a transaction, byte or block read, targets an address not
-  registered with the stub.
+- SCDC register reads, writes and block reads (9 bytes, the CED block; 2 bytes; the
+  32-byte maximum, each in one ioctl; a 33-byte read refused by the capabilities; and a
+  register at a time with `bytewise`),
+- the bus's own SMBus calls, binding another address and back, and the adapter's sysfs
+  name,
+- `NoAcknowledge(Address)` when a transfer targets an address with no chip.
 
 These tests require `i2c-stub` to be loaded (`modprobe i2c-stub`) and the calling process
 to have write permission on the resulting device node. They are gated behind a feature flag
 (`--features integration`) and are not run in standard CI. They are the authoritative test
-for transport correctness and must be run before any release.
+of the SMBus path and must be run before any release. The `I2C_RDWR` path has no such target
+(`i2c-stub` offers SMBus only): its unit tests use a mock that records each message's
+address.
 
 **Error conditions not covered:** bus errors, clock stretch timeouts, and arbitration loss
 cannot be simulated via `i2c-stub`. `i2c-stub` always ACKs registered addresses; the only
 error condition it can produce is a transfer to an unregistered address, which it reports
-as `ENODEV` (`AdapterGone`) rather than the `ENXIO` (`AddressNack`) of a real adapter's
-NACK. The mapping from
+as `ENODEV` (`NoDevice` on a bus opened for SMBus) rather than the `ENXIO` (`AddressNack`)
+of a real adapter's NACK. The mapping from
 `LinuxI2CError` to these variants is covered by the Tier 1 unit tests; exercising them
 end-to-end requires real misbehaving hardware.
 
-`i2cdev`'s `MockI2CDevice` is intentionally not used for transport tests. The mock does
+`i2cdev`'s `MockI2CDevice` is intentionally not used for bus tests. The mock does
 not validate message structure, addresses, or flags — it would test `i2cdev`'s own mock
 rather than this crate's message construction logic. The mock is appropriate for callers
 of `ScdcTransport` (`culvert`, `plumbob`) where register-level behaviour matters; it is

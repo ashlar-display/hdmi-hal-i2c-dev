@@ -23,7 +23,8 @@
 Linux userspace [`hdmi-hal`] backend backed by `/dev/i2c-N` via the `i2c-dev` kernel interface.
 
 `hdmi-hal-i2c-dev` is the **development, validation, and diagnostic backend** for the HDMI stack.
-It implements [`ScdcTransport`] over a real `/dev/i2c-N` device node and provides [`StubPhy`], a
+It implements [`DdcBus`] over a real `/dev/i2c-N` device node, the bus `hdmi-hal`'s SCDC
+transport ([`ScdcTransport`]) and the EDID reader run over, and provides [`StubPhy`], a
 callback-based [`FrlPhy`] and [`TmdsPhy`] stub that lets you run FRL link training and a TMDS
 bring-up from userspace without a PHY kernel driver. Use it to validate protocol crates ([`culvert`], [`plumbob`])
 against a real HDMI sink before and alongside kernel integration.
@@ -38,11 +39,18 @@ cargo add hdmi-hal-i2c-dev
 ```
 
 ```rust,no_run
-use hdmi_hal_i2c_dev::{connector_ddc_adapter, I2cDevTransport, StubPhy};
+use hdmi_hal::scdc::ScdcOverDdc;
+use hdmi_hal_i2c_dev::{connector_ddc_adapter, I2cDevBus, StubPhy};
 
-// Resolve the DDC adapter for a named DRM connector and open the transport.
+// Resolve the DDC adapter for a named DRM connector and open its bus.
 let path = connector_ddc_adapter("card0-HDMI-A-1")?;
-let transport = I2cDevTransport::open(path)?;
+let bus = I2cDevBus::open(path)?;
+
+// SCDC over the bus; an adapter that cannot read a register block in one transfer
+// gets the register-at-a-time transport.
+let transport = ScdcOverDdc::new(&bus)
+    .or_else(ScdcOverDdc::bytewise)
+    .expect("the adapter reaches SCDC");
 
 // StubPhy forwards each PHY call to a callback and returns Ok(()).
 // Pass a closure for logging, test assertions, or recording.
@@ -51,17 +59,6 @@ let phy = StubPhy::new(|call| eprintln!("{call:?}"));
 // Pass transport and phy to culvert / plumbob as you would any other backend.
 # Ok::<(), hdmi_hal_i2c_dev::I2cDevError>(())
 ```
-
-## Block reads
-
-`I2cDevTransport::read_block` is one SMBus I2C block read (one ioctl), up to 32 bytes
-(`transport::MAX_BLOCK_LEN`; a longer read is refused, not split). The adapter must support
-the SMBus I2C block read: the DRM DDC adapters of `i915` and `amdgpu` do, and on one without
-it a block read fails with `I2cErrorKind::Unsupported`; for such an adapter,
-`I2cDevTransport::open_bytewise` reads a block one register at a time instead, which is not
-one transaction. One ioctl is not always one transaction on the wire: that is the adapter
-driver's, and the Synopsys DesignWare HDMI controller's (`dw-hdmi`) reads byte by byte. See
-[`doc/architecture.md`] for the adapters checked.
 
 ## The DDC bus
 
@@ -74,6 +71,17 @@ gives an adapter not in it SMBus-level capabilities; `I2cDevBus::open_with` take
 the caller. An operation the capabilities rule out is refused before any ioctl. For an
 adapter without plain I²C, such as `i2c-stub`, `I2cDevBus::open_smbus` makes every
 operation an SMBus call instead.
+
+## SCDC
+
+SCDC is `hdmi-hal`'s `ScdcOverDdc` over an `I2cDevBus`: a register read is a `write_read` of
+the offset and one byte, a write a `write` of offset and value, and a block read one
+`write_read`, as long as the bus's capabilities allow (32 bytes at SMBus level, so a 33-byte
+block read is refused, not split). `ScdcOverDdc::bytewise` reads a block one register at a
+time instead, which is not one transaction, for an adapter that cannot read 16 registers at
+once. One transfer is not always one transaction on the wire: that is the adapter driver's,
+and the Synopsys DesignWare HDMI controller's (`dw-hdmi`) reads byte by byte. The bus is
+shared: the EDID reader and SCDC borrow the same `I2cDevBus`.
 
 ## Reading the EDID
 
@@ -90,8 +98,8 @@ membership in the `i2c` group, or by running as root.
 
 ## `amdgpu` limitation
 
-The `amdgpu` DDC adapter collapses all I²C errors to `EIO`. On that hardware,
-`I2cTransactionError::kind` is always `Unknown { errno: EIO }` regardless of the actual bus
+The `amdgpu` DDC adapter collapses all I²C errors to `EIO`. On that hardware, a failed
+transfer's `I2cErrorKind` is always `Unknown { errno: EIO }` regardless of the actual bus
 condition. The named `I2cErrorKind` variants (`AddressNack`, `ClockStretchTimeout`, etc.) are
 correct per `Documentation/i2c/fault-codes.rst` and are reachable on compliant adapters.
 See [`doc/architecture.md`] for details.
@@ -140,6 +148,7 @@ curl -A "your-tool (contact)" https://crates.io/api/v1/crates/hdmi-hal-i2c-dev/X
 GitHub release or tag.
 
 [`hdmi-hal`]: https://crates.io/crates/hdmi-hal
+[`DdcBus`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/ddc/trait.DdcBus.html
 [`ScdcTransport`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/scdc/trait.ScdcTransport.html
 [`FrlPhy`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/phy/trait.FrlPhy.html
 [`TmdsPhy`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/phy/trait.TmdsPhy.html

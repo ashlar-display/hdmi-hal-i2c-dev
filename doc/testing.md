@@ -24,10 +24,11 @@ internal `connector_ddc_adapter_in` function with that root substituted for
 - `DdcAdapterIndexUnparseable` when the suffix is empty (`i2c-` with nothing after it)
 - Multi-digit adapter indices
 
-### `I2cErrorKind` errno mapping (in `src/transport.rs`)
+### `I2cErrorKind` errno mapping (in `src/error_tests.rs`)
 
 Unit tests for the `map_errno` function, which maps raw errno integers to `I2cErrorKind`
-variants following `Documentation/i2c/fault-codes.rst`.
+variants following `Documentation/i2c/fault-codes.rst`, and for the `DdcErrorKind` each
+error is.
 
 **Covered:**
 - `ENXIO` → `AddressNack`
@@ -37,32 +38,12 @@ variants following `Documentation/i2c/fault-codes.rst`.
 - `EPROTO` → `BusProtocolError`
 - `ESHUTDOWN` → `AdapterGone`
 - `ENODEV` → `AdapterGone`
+- `EOPNOTSUPP` → `Unsupported`
 - `EIO` → `Unknown { errno: EIO }` (the only errno produced by `amdgpu`)
 - Unrecognised errno → `Unknown { errno }`
-- Zero errno → `Unknown { errno: 0 }` (produced by the partial-completion path)
-
-### `read_block` (in `src/transport_tests.rs`)
-
-Unit tests against an in-memory device behind the crate-private `SmbusDevice` seam, which
-records every block read it is asked for, so a test can count ioctls.
-
-**Covered:**
-- Consecutive registers read in one ioctl (9 bytes, the CED block)
-- The 32-byte maximum read in one ioctl
-- An empty buffer: `Ok`, no ioctl
-- A 33-byte buffer: `BlockReadTooLong`, no ioctl, the buffer unchanged
-- A result of another length than requested: `UnexpectedBlockLength`, the buffer unchanged
-  (not padded)
-- A 32-byte read from 0xF0: `UnexpectedBlockLength` with 16 returned, as on `i2c-stub`,
-  which ends a block read at 0xFF (the mock does the same rather than wrapping)
-- `EOPNOTSUPP` (no SMBus I2C block read): `Transaction` with `Unsupported`, and no byte
-  reads after it
-- An ioctl error: `Transaction`, with the kind mapped as for `read` (the phase is not
-  checked: one ioctl does not say which message failed, and the crate reports `Write`)
-- Opened bytewise (`open_bytewise`): one byte-data read per register and no block read,
-  no length limit, wrapping past 0xFF, and stopping at the first error with the bytes
-  before it in the buffer
-- `Display` of both new errors, and no `source` for either (in `src/error_tests.rs`)
+- Zero errno → `Unknown { errno: 0 }` (an I/O error without an OS errno)
+- Each class's `DdcErrorKind`, `NoDevice` as `NoAcknowledge(Address)`, a refusal as
+  `Unsupported` and an incomplete transfer as `Other`
 
 ### `StubPhy` (in `src/phy_tests.rs`)
 
@@ -120,7 +101,7 @@ register file per address that records each call.
 - Opening fails on a missing path and on a file that refuses `I2C_SLAVE`
 
 `tests/smbus_bus.rs` runs the same calls against `i2c-stub` (tier 2, feature `integration`,
-the same setup as `tests/transport.rs`).
+the same setup as `tests/scdc.rs`).
 
 ### The `adapters` table (in `src/adapters_tests.rs`)
 
@@ -153,11 +134,11 @@ Gated behind `--features integration`. Requires the `i2c-stub` kernel module and
 device node with appropriate permissions. See [`doc/setup.md`](setup.md) for setup
 instructions. **Not run in standard CI.** Must be run before any release.
 
-These tests exercise the full SMBus byte-data and I2C block-read (`I2C_SMBUS`) ioctl paths
-through
-`I2cDevTransport` and validate things that the Tier 1 tests cannot: that messages are
-constructed correctly, that the slave address 0x54 is set, and that the ioctl round-trip
-through the kernel produces correct results.
+These tests exercise SCDC as the stack does it, `hdmi-hal`'s `ScdcOverDdc` over an
+`I2cDevBus` opened with `open_smbus` (`tests/scdc.rs`), and that bus's own operations
+(`tests/smbus_bus.rs`), through the SMBus ioctls (`I2C_SMBUS`), and validate things that the
+Tier 1 tests cannot: that the calls are made correctly, that the address is bound, and that
+the round trip through the kernel produces correct results.
 
 **Covered:**
 - An unwritten register reads back as `0x00` (stub initialises all registers to zero)
@@ -167,15 +148,16 @@ through the kernel produces correct results.
 - A block read returns consecutive registers: 9 bytes (0x50–0x58, the CED block), 2 bytes,
   and the 32-byte maximum, each written first; `i2c-stub` supports the SMBus I2C block read
   by default (`I2C_FUNC_SMBUS_I2C_BLOCK`)
-- A 33-byte block read is refused (`BlockReadTooLong`)
-- A 32-byte block read from 0xF0 is `UnexpectedBlockLength` with 16 bytes returned:
-  `i2c-stub` returns at most `256 - command` bytes
-- A transport opened with `open_bytewise` reads a block a register at a time
-- A transaction to an unregistered address, a byte read or a block read, produces a
-  `Transaction` error (the kind is `AdapterGone` on `i2c-stub`, which returns `ENODEV` for
-  an address with no chip; `AddressNack` on a compliant adapter, which returns `ENXIO`;
-  `Unknown { errno: EIO }` on `amdgpu`). These two tests need the stub without a chip at
-  0x54, so they run in a second pass ([`setup.md`](setup.md), "NACK tests")
+- A 33-byte block read is refused by the bus's capabilities (`Refused` with `TooLong`)
+- A 32-byte block read from 0xF0 is a `Transfer` error with `Unknown { errno: EIO }` and the
+  buffer left as it was: `i2c-stub` returns at most `256 - command` bytes
+- A transport made with `ScdcOverDdc::bytewise` reads a block a register at a time
+- The bus's byte, byte-data and block writes and reads, binding another address and back,
+  and the adapter's name read from sysfs
+- An address with no chip is `NoAcknowledge(Address)`: `i2c-stub` returns `ENODEV` for it,
+  which a bus opened for SMBus takes as `NoDevice`. The tests at 0x54, a register read and a
+  block read over SCDC and a byte-data read on the bus, need the stub without a chip there,
+  so they run in a second pass ([`setup.md`](setup.md), "NACK tests")
 
 A test whose adapter variable is unset is skipped and prints `skipped: <variable> not set`;
 run with `--nocapture` to see skips, as a skipped test still reports `ok`. With

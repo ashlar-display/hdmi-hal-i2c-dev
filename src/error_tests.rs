@@ -4,7 +4,7 @@ use std::error::Error;
 use std::io;
 use std::path::PathBuf;
 
-use crate::error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase};
+use crate::error::{I2cDevError, I2cErrorKind, map_errno, to_raw_errno};
 
 // --- I2cDevError::Display ----------------------------------------------------
 
@@ -50,15 +50,6 @@ fn display_device_open_failed() {
     assert_eq!(e.to_string(), "failed to open I²C device: /dev/i2c-99");
 }
 
-#[test]
-fn display_transaction() {
-    let e = I2cDevError::Transaction(I2cTransactionError {
-        phase: MessagePhase::Write { register: 0x20 },
-        kind: I2cErrorKind::AddressNack,
-    });
-    assert!(e.to_string().contains("I²C transaction failed"), "got: {e}");
-}
-
 // --- I2cDevError::Error::source ----------------------------------------------
 
 #[test]
@@ -71,94 +62,9 @@ fn source_device_open_failed_is_some() {
 }
 
 #[test]
-fn source_transaction_is_some() {
-    let e = I2cDevError::Transaction(I2cTransactionError {
-        phase: MessagePhase::Write { register: 0x00 },
-        kind: I2cErrorKind::BusBusy,
-    });
-    assert!(e.source().is_some());
-}
-
-#[test]
 fn source_connector_not_found_is_none() {
     let e = I2cDevError::ConnectorNotFound {
         connector: "x".to_string(),
-    };
-    assert!(e.source().is_none());
-}
-
-#[test]
-fn display_block_read_too_long() {
-    let e = I2cDevError::BlockReadTooLong {
-        register: 0x00,
-        len: 256,
-        max: 32,
-    };
-    assert_eq!(
-        e.to_string(),
-        "block read of 256 bytes from register 0x00 exceeds the 32-byte limit"
-    );
-}
-
-#[test]
-fn display_unexpected_block_length() {
-    let e = I2cDevError::UnexpectedBlockLength {
-        register: 0x50,
-        requested: 9,
-        returned: 8,
-    };
-    assert_eq!(
-        e.to_string(),
-        "block read from register 0x50 returned 8 bytes, not 9"
-    );
-}
-
-#[test]
-fn source_block_read_errors_are_none() {
-    let too_long = I2cDevError::BlockReadTooLong {
-        register: 0,
-        len: 33,
-        max: 32,
-    };
-    let unexpected = I2cDevError::UnexpectedBlockLength {
-        register: 0,
-        requested: 2,
-        returned: 1,
-    };
-    assert!(too_long.source().is_none());
-    assert!(unexpected.source().is_none());
-}
-
-// --- I2cTransactionError::Display -------------------------------------------
-
-#[test]
-fn transaction_error_display_write_phase() {
-    let e = I2cTransactionError {
-        phase: MessagePhase::Write { register: 0x0f },
-        kind: I2cErrorKind::AddressNack,
-    };
-    assert_eq!(e.to_string(), "write phase (register 0x0f): AddressNack");
-}
-
-#[test]
-fn transaction_error_display_read_phase() {
-    let e = I2cTransactionError {
-        phase: MessagePhase::Read { register: 0xa0 },
-        kind: I2cErrorKind::Unknown { errno: 5 },
-    };
-    assert_eq!(
-        e.to_string(),
-        "read phase (register 0xa0): Unknown { errno: 5 }"
-    );
-}
-
-// --- I2cTransactionError::Error::source -------------------------------------
-
-#[test]
-fn transaction_error_source_is_none() {
-    let e = I2cTransactionError {
-        phase: MessagePhase::Write { register: 0x00 },
-        kind: I2cErrorKind::AddressNack,
     };
     assert!(e.source().is_none());
 }
@@ -170,10 +76,10 @@ fn errnos_classify_as_ddc_error_kinds() {
     use hdmi_hal::ddc::{DdcError, DdcErrorKind, NoAcknowledgeSource};
 
     let kind = |errno| {
-        I2cDevError::Transaction(I2cTransactionError {
-            phase: MessagePhase::Write { register: 0x21 },
-            kind: crate::transport::map_errno(errno),
-        })
+        I2cDevError::Transfer {
+            address: 0x54,
+            kind: map_errno(errno),
+        }
         .kind()
     };
     for (errno, expected) in [
@@ -193,26 +99,27 @@ fn errnos_classify_as_ddc_error_kinds() {
         assert_eq!(kind(errno), expected, "errno {errno}");
     }
 
-    let data_nack = I2cTransactionError {
-        phase: MessagePhase::Read { register: 0x21 },
-        kind: I2cErrorKind::DataNack,
+    let classify = |kind| {
+        I2cDevError::Transfer {
+            address: 0x54,
+            kind,
+        }
+        .kind()
     };
     assert_eq!(
-        data_nack.kind(),
+        classify(I2cErrorKind::DataNack),
         DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data)
     );
-    let too_long = I2cDevError::BlockReadTooLong {
-        register: 0x40,
-        len: 64,
-        max: 32,
+    assert_eq!(
+        classify(I2cErrorKind::NoDevice),
+        DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)
+    );
+    let refused = I2cDevError::Refused {
+        reason: crate::error::Refusal::EmptyWrite,
     };
-    assert_eq!(too_long.kind(), DdcErrorKind::Unsupported);
-    let short = I2cDevError::UnexpectedBlockLength {
-        register: 0xF0,
-        requested: 32,
-        returned: 16,
-    };
-    assert_eq!(short.kind(), DdcErrorKind::Other);
+    assert_eq!(refused.kind(), DdcErrorKind::Unsupported);
+    let incomplete = I2cDevError::IncompleteTransfer { sent: 2, done: 1 };
+    assert_eq!(incomplete.kind(), DdcErrorKind::Other);
     let not_found = I2cDevError::ConnectorNotFound {
         connector: "card0-HDMI-A-1".into(),
     };
@@ -268,4 +175,37 @@ fn bus_errors_and_refusals_print() {
         );
     }
     assert!(transfer.source().is_none());
+}
+
+// --- map_errno, to_raw_errno ---------------------------------------------------
+
+#[test]
+fn errnos_map_to_the_fault_codes_classes() {
+    for (errno, expected) in [
+        (libc::ENXIO, "AddressNack"),
+        (libc::EAGAIN, "ArbitrationLost"),
+        (libc::ETIMEDOUT, "ClockStretchTimeout"),
+        (libc::EBUSY, "BusBusy"),
+        (libc::EPROTO, "BusProtocolError"),
+        (libc::ESHUTDOWN, "AdapterGone"),
+        (libc::ENODEV, "AdapterGone"),
+        (libc::EOPNOTSUPP, "Unsupported"),
+    ] {
+        assert_eq!(format!("{:?}", map_errno(errno)), expected, "errno {errno}");
+    }
+    // amdgpu's only errno has no class; nor has an unknown one, or none.
+    for errno in [libc::EIO, 9999, 0] {
+        assert!(matches!(map_errno(errno), I2cErrorKind::Unknown { errno: e } if e == errno));
+    }
+}
+
+#[test]
+fn an_io_error_without_an_errno_is_errno_0() {
+    use i2cdev::linux::LinuxI2CError;
+
+    assert_eq!(to_raw_errno(LinuxI2CError::Errno(libc::EIO)), libc::EIO);
+    let os = io::Error::from_raw_os_error(libc::ENXIO);
+    assert_eq!(to_raw_errno(LinuxI2CError::Io(os)), libc::ENXIO);
+    let other = io::Error::other("no errno");
+    assert_eq!(to_raw_errno(LinuxI2CError::Io(other)), 0);
 }

@@ -1,6 +1,6 @@
 //! Integration tests for [`I2cDevBus::open_smbus`] against the Linux `i2c-stub` kernel module.
 //!
-//! The same setup as `tests/transport.rs`: `i2c-stub` loaded with a chip at the SCDC address
+//! The same setup as `tests/scdc.rs`: `i2c-stub` loaded with a chip at the SCDC address
 //! (`sudo modprobe i2c-stub chip_addr=0x54`), its adapter number in `I2C_STUB_ADAPTER`, and for
 //! the second pass the stub reloaded at 0x55 with its adapter in `I2C_STUB_ADAPTER_NACK`. A
 //! test whose variable is unset is skipped, unless `I2C_STUB_REQUIRED=1`.

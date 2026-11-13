@@ -13,8 +13,8 @@ use hdmi_hal::ddc::{DdcBus, DdcCapabilities, EddcTarget, MAX_SEGMENT, SCDC, SEGM
 
 use crate::adapters::{self, Eagain, Known, SMBUS_LEVEL};
 use crate::error::{I2cDevError, I2cErrorKind, Refusal};
+use crate::error::{map_errno, to_raw_errno};
 use crate::smbus::SmbusBus;
-use crate::transport::{map_errno, to_raw_errno};
 
 /// The longest message the kernel's `i2c-dev` takes in one `I2C_RDWR` transfer
 /// (`i2c-dev.c`, 8192 bytes). A longer one is refused before the ioctl: `i2cdev` passes

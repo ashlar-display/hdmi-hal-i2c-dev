@@ -9,11 +9,18 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use hdmi_hal_i2c_dev::{connector_ddc_adapter, I2cDevTransport, StubPhy};
+//! use hdmi_hal::scdc::ScdcOverDdc;
+//! use hdmi_hal_i2c_dev::{connector_ddc_adapter, I2cDevBus, StubPhy};
 //!
-//! // Resolve the DDC adapter for a named connector and open the transport.
+//! // Resolve the DDC adapter for a named connector and open its bus.
 //! let path = connector_ddc_adapter("card0-HDMI-A-1")?;
-//! let transport = I2cDevTransport::open(path)?;
+//! let bus = I2cDevBus::open(path)?;
+//!
+//! // SCDC over the bus; an adapter that cannot read a register block in one transfer
+//! // gets the register-at-a-time transport.
+//! let transport = ScdcOverDdc::new(&bus)
+//!     .or_else(ScdcOverDdc::bytewise)
+//!     .expect("the adapter reaches SCDC");
 //!
 //! // StubPhy accepts all PHY calls and forwards them to a callback.
 //! // Use `|_| {}` for a no-op, or a closure for logging or test assertions.
@@ -42,7 +49,7 @@
 //! # `amdgpu` limitation
 //!
 //! The `amdgpu` DDC adapter collapses all I²C errors to `EIO`. On that
-//! hardware, [`I2cTransactionError::kind`] is always
+//! hardware, a failed transfer's [`I2cErrorKind`] is always
 //! [`I2cErrorKind::Unknown`]`{ errno: EIO }` regardless of the actual bus
 //! condition. See `doc/architecture.md` for details.
 //!
@@ -61,11 +68,9 @@ pub mod edid;
 pub mod error;
 pub mod phy;
 mod smbus;
-pub mod transport;
 
 pub use bus::I2cDevBus;
 pub use discovery::connector_ddc_adapter;
 pub use edid::{EdidReadError, read_edid};
-pub use error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase, Refusal};
+pub use error::{I2cDevError, I2cErrorKind, Refusal};
 pub use phy::{PhyCall, StubPhy};
-pub use transport::I2cDevTransport;
