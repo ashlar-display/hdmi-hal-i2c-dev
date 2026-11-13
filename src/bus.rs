@@ -1,4 +1,5 @@
-//! [`DdcBus`] implementation over a `/dev/i2c-N` device node with `I2C_RDWR`.
+//! [`DdcBus`] implementation over a `/dev/i2c-N` device node, with `I2C_RDWR` or, for an
+//! adapter without plain I²C, SMBus calls.
 //!
 //! [`DdcBus`]: hdmi_hal::ddc::DdcBus
 
@@ -6,12 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use i2cdev::core::{I2CMessage, I2CTransfer};
-use i2cdev::linux::{LinuxI2CBus, LinuxI2CError, LinuxI2CMessage};
+use i2cdev::linux::{LinuxI2CBus, LinuxI2CDevice, LinuxI2CError, LinuxI2CMessage};
 
-use hdmi_hal::ddc::{DdcBus, DdcCapabilities, EddcTarget, MAX_SEGMENT, SEGMENT_POINTER};
+use hdmi_hal::ddc::{DdcBus, DdcCapabilities, EddcTarget, MAX_SEGMENT, SCDC, SEGMENT_POINTER};
 
 use crate::adapters::{self, Eagain, Known, SMBUS_LEVEL};
 use crate::error::{I2cDevError, I2cErrorKind, Refusal};
+use crate::smbus::SmbusBus;
 use crate::transport::{map_errno, to_raw_errno};
 
 /// The longest message the kernel's `i2c-dev` takes in one `I2C_RDWR` transfer
@@ -57,6 +59,27 @@ impl I2cBus for LinuxI2CBus {
     }
 }
 
+/// The bus behind an [`I2cDevBus`] opened from a device node: `I2C_RDWR` transfers
+/// ([`open`](I2cDevBus::open), [`open_with`](I2cDevBus::open_with)) or SMBus calls
+/// ([`open_smbus`](I2cDevBus::open_smbus)). Opaque: callers name `I2cDevBus` alone.
+#[derive(Debug)]
+pub struct Backend(Inner);
+
+#[derive(Debug)]
+enum Inner {
+    Rdwr(LinuxI2CBus),
+    Smbus(SmbusBus<LinuxI2CDevice>),
+}
+
+impl I2cBus for Backend {
+    fn transfer(&mut self, messages: &mut [Message<'_>]) -> Result<u32, LinuxI2CError> {
+        match &mut self.0 {
+            Inner::Rdwr(bus) => I2cBus::transfer(bus, messages),
+            Inner::Smbus(bus) => I2cBus::transfer(bus, messages),
+        }
+    }
+}
+
 /// A DDC bus over a `/dev/i2c-N` device node: [`DdcBus`] with `I2C_RDWR` transfers, an
 /// address per message, so an E-DDC read writes the segment pointer (0x30) and reads the
 /// target in one transfer.
@@ -72,12 +95,17 @@ impl I2cBus for LinuxI2CBus {
 /// ([`DdcCapabilities::segmented_piece`]) is one transfer per piece. The crate adds no
 /// retries; the kernel's I²C core retries `EAGAIN` up to the adapter's `retries`.
 ///
+/// Opened with [`open_smbus`](Self::open_smbus), every operation is one SMBus call
+/// instead, for an adapter without plain I²C such as `i2c-stub`.
+///
 /// [`DdcBus`]: hdmi_hal::ddc::DdcBus
 // `I2cBus` is `pub(crate)`, a test seam: external callers can only use the default.
 #[allow(private_bounds)]
 #[derive(Debug)]
-pub struct I2cDevBus<B: I2cBus = LinuxI2CBus> {
+pub struct I2cDevBus<B: I2cBus = Backend> {
     bus: Mutex<B>,
+    /// Opened with `open_smbus`: `ENODEV` is no chip at the address.
+    smbus: bool,
     capabilities: DdcCapabilities,
     /// The adapter's sysfs name, when `open` read it.
     adapter: Option<String>,
@@ -85,7 +113,7 @@ pub struct I2cDevBus<B: I2cBus = LinuxI2CBus> {
     known: Option<Known>,
 }
 
-impl I2cDevBus<LinuxI2CBus> {
+impl I2cDevBus<Backend> {
     /// Open the given `/dev/i2c-N` device as a DDC bus, with the capabilities the
     /// [`adapters`] table gives for the adapter's name
     /// (`/sys/class/i2c-dev/i2c-N/name`), or [`SMBUS_LEVEL`] for an adapter not in it or a
@@ -132,7 +160,40 @@ impl I2cDevBus<LinuxI2CBus> {
             path: path.to_path_buf(),
             source: e.into(),
         })?;
-        Ok(Self::from_bus(bus, capabilities))
+        Ok(Self::from_bus(Backend(Inner::Rdwr(bus)), capabilities))
+    }
+
+    /// Open the given `/dev/i2c-N` device as a DDC bus over SMBus calls, for an adapter
+    /// without plain I²C (`I2C_RDWR`), such as `i2c-stub`. Its capabilities are
+    /// [`SMBUS_LEVEL`]: `write` of up to 33 bytes, `write_read` of one byte and up to 32,
+    /// `read` of one byte, E-DDC segment 0 in 32-byte pieces, each an SMBus call: a write of
+    /// one byte, a byte-data write, an I²C block write; a byte-data read or an I²C block read;
+    /// a byte read.
+    ///
+    /// SMBus addresses a device per file descriptor, so the bus binds each address it uses
+    /// as it changes (`I2C_SLAVE`): an address a kernel driver holds fails with `Busy`. An
+    /// `ENODEV` is no chip at the address, as `i2c-stub` reports it:
+    /// `NoAcknowledge(Address)`.
+    ///
+    /// # Errors
+    ///
+    /// [`I2cDevError::DeviceOpenFailed`] if the device cannot be opened or bound to the
+    /// SCDC address it starts at.
+    pub fn open_smbus(path: impl AsRef<Path>) -> Result<Self, I2cDevError> {
+        let path = path.as_ref();
+        let device = LinuxI2CDevice::new(path, u16::from(SCDC)).map_err(|e| {
+            I2cDevError::DeviceOpenFailed {
+                path: path.to_path_buf(),
+                source: e.into(),
+            }
+        })?;
+        let mut bus = Self::from_bus(
+            Backend(Inner::Smbus(SmbusBus::new(device, Some(SCDC)))),
+            SMBUS_LEVEL,
+        );
+        bus.smbus = true;
+        bus.adapter = adapter_name(Path::new("/sys/class/i2c-dev"), path);
+        Ok(bus)
     }
 }
 
@@ -141,10 +202,19 @@ impl<B: I2cBus> I2cDevBus<B> {
     pub(crate) fn from_bus(bus: B, capabilities: DdcCapabilities) -> Self {
         Self {
             bus: Mutex::new(bus),
+            smbus: false,
             capabilities,
             adapter: None,
             known: None,
         }
+    }
+
+    /// A bus over SMBus calls through `bus`, as `open_smbus` opens one. Used in unit tests.
+    #[cfg(test)]
+    pub(crate) fn from_smbus(bus: B) -> Self {
+        let mut bus = Self::from_bus(bus, SMBUS_LEVEL);
+        bus.smbus = true;
+        bus
     }
 
     /// The adapter's sysfs name, as [`open`](I2cDevBus::open) read it; `None` when it could
@@ -164,6 +234,7 @@ impl<B: I2cBus> I2cDevBus<B> {
                 }),
             ) => I2cErrorKind::ClockStretchTimeout,
             (libc::EINVAL, Some(_)) => I2cErrorKind::Unsupported,
+            (libc::ENODEV, _) if self.smbus => I2cErrorKind::NoDevice,
             _ => map_errno(errno),
         }
     }

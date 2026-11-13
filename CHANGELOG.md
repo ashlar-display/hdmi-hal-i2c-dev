@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the target in one transfer, through `i2cdev`'s `LinuxI2CBus`. `open(path)` takes the
   capabilities from `adapters`, a table of the DRM DDC adapters by the name they register
   under (`SMBUS_LEVEL` for one not in it), and reads `EAGAIN` and `EINVAL` as their drivers
-  mean them; `open_with(path, capabilities)` takes the capabilities from the caller; what
+  mean them; `open_with(path, capabilities)` takes the capabilities from the caller;
+  `open_smbus(path)` makes every operation an SMBus call, for an adapter without plain I²C
+  such as `i2c-stub` (`I2cErrorKind::NoDevice` for its `ENODEV`, `NoAcknowledge(Address)`);
+  what
   they rule out, a write of no
   bytes, an E-DDC read past its segment and a message over the kernel's 8192 bytes are
   refused before any ioctl (`I2cDevError::Refused` with a `Refusal`). A failed transfer is

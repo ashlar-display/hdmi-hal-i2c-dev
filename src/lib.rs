@@ -60,6 +60,7 @@ pub mod discovery;
 pub mod edid;
 pub mod error;
 pub mod phy;
+mod smbus;
 pub mod transport;
 
 pub use bus::I2cDevBus;

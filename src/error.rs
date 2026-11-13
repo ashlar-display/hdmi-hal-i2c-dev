@@ -211,6 +211,9 @@ pub enum I2cErrorKind {
     /// device that is not there at all, and `i2c-stub` returns it for an address with no
     /// chip, where a real adapter returns `ENXIO` ([`AddressNack`](Self::AddressNack)).
     AdapterGone,
+    /// No chip at the address (`ENODEV` on a bus opened with
+    /// [`I2cDevBus::open_smbus`](crate::I2cDevBus::open_smbus), as `i2c-stub` reports it).
+    NoDevice,
     /// The adapter does not support the operation (`EOPNOTSUPP`). For a block read, the
     /// adapter most likely lacks the SMBus I2C block read (`I2C_FUNC_SMBUS_READ_I2C_BLOCK`),
     /// as an SMBus-only adapter may; open the transport with
@@ -333,6 +336,7 @@ impl DdcError for I2cTransactionError {
 fn ddc_kind(kind: &I2cErrorKind) -> DdcErrorKind {
     match kind {
         I2cErrorKind::AddressNack => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
+        I2cErrorKind::NoDevice => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
         I2cErrorKind::DataNack => DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
         I2cErrorKind::ArbitrationLost | I2cErrorKind::BusBusy => DdcErrorKind::Busy,
         I2cErrorKind::ClockStretchTimeout => DdcErrorKind::Timeout,

@@ -277,6 +277,8 @@ impl I2cDevBus {
     /// The caller asserts what the adapter does with a transfer.
     pub fn open_with(path: impl AsRef<Path>, capabilities: DdcCapabilities)
         -> Result<Self, I2cDevError>;
+    /// SMBus calls, for an adapter without plain I²C (`i2c-stub`).
+    pub fn open_smbus(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
     /// The adapter's sysfs name, as `open` read it.
     pub fn adapter(&self) -> Option<&str>;
 }
@@ -311,6 +313,26 @@ impl DdcBus for I2cDevBus { type Error = I2cDevError; /* … */ }
   timeout where its driver returns it for one (dw-hdmi, Inno and rk3066, i915 after a GMBUS
   timeout), and `EINVAL`, with which these drivers refuse what they cannot do, is
   `Unsupported`. Otherwise Linux's convention holds: `EAGAIN` is lost arbitration, `Busy`.
+
+- **SMBus mode** (`open_smbus`), for an adapter without plain I²C such as `i2c-stub`, the
+  crate's integration target: every operation is one SMBus call on a device bound to the
+  address (`I2C_SLAVE`, re-bound as the address changes, so an address a kernel driver holds
+  fails with `Busy`), within `adapters::SMBUS_LEVEL`:
+
+  | Operation | SMBus call |
+  |---|---|
+  | `write` of 1 byte | write byte |
+  | `write` of 2 bytes | write byte data (offset, value) |
+  | `write` of 3–33 bytes | I²C block write (offset, up to 32 values) |
+  | `write_read` of 1 byte and 1 | read byte data |
+  | `write_read` of 1 byte and 2–32 | I²C block read |
+  | `read` of 1 byte | read byte |
+  | `read_segmented`, segment 0 | I²C block reads of 32 bytes at the target |
+
+  `ENODEV` there is no chip at the address, as `i2c-stub` reports it
+  (`I2cErrorKind::NoDevice`, `NoAcknowledge(Address)`); a block read that returns another
+  length than asked is `EIO`, with the buffer left as it was. The public type stays
+  `I2cDevBus`: its backend, `I2C_RDWR` or SMBus, is the opaque `bus::Backend`.
 
 ### The `adapters` table
 

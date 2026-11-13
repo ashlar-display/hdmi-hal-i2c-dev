@@ -71,7 +71,9 @@ transfer, and messages may be longer than SMBus's 32 bytes. What the adapter rea
 with a transfer the kernel does not report: `I2cDevBus::open` takes the capabilities from a
 table of the DRM DDC adapters (`adapters`), by the name the adapter registers under, and
 gives an adapter not in it SMBus-level capabilities; `I2cDevBus::open_with` takes them from
-the caller. An operation the capabilities rule out is refused before any ioctl.
+the caller. An operation the capabilities rule out is refused before any ioctl. For an
+adapter without plain I²C, such as `i2c-stub`, `I2cDevBus::open_smbus` makes every
+operation an SMBus call instead.
 
 ## Reading the EDID
 

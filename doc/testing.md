@@ -105,6 +105,23 @@ errno or execute fewer messages than sent.
 - A table adapter's `EAGAIN` and `EINVAL` read as its driver means them; the caller's
   capabilities keep Linux's convention
 
+### SMBus mode (in `src/smbus_tests.rs`)
+
+Unit tests for `open_smbus`'s backend, through the crate-private `Smbus` seam: a mock
+register file per address that records each call.
+
+**Covered:**
+- Each operation is its SMBus call, and an address is bound only when it changes
+- An EDID block at segment 0 is four 32-byte block reads at the right offsets
+- What SMBus cannot do is refused by the capabilities; a shape that reaches the backend
+  anyway is `EOPNOTSUPP`
+- `ENODEV` is `NoAcknowledge(Address)`, and a failed bind is retried on the next call
+- A short block read is `EIO` and leaves the buffer
+- Opening fails on a missing path and on a file that refuses `I2C_SLAVE`
+
+`tests/smbus_bus.rs` runs the same calls against `i2c-stub` (tier 2, feature `integration`,
+the same setup as `tests/transport.rs`).
+
 ### The `adapters` table (in `src/adapters_tests.rs`)
 
 **Covered:**
