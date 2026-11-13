@@ -68,6 +68,34 @@ condition. The named `I2cErrorKind` variants (`AddressNack`, `ClockStretchTimeou
 correct per `Documentation/i2c/fault-codes.rst` and are reachable on compliant adapters.
 See [`doc/architecture.md`] for details.
 
+## Stack position
+
+```mermaid
+flowchart LR
+    hal["hdmi-hal (traits)"]
+    dev["hdmi-hal-i2c-dev"]
+    kernel["/dev/i2c-N (Linux i2c-dev)"]
+    protocol["culvert, plumbob"]
+
+    hal -->|"ScdcTransport, HdmiPhy"| dev
+    dev --> kernel
+    protocol -->|"drive the traits"| dev
+```
+
+`hdmi-hal-i2c-dev` implements [`hdmi-hal`]'s traits for Linux userspace; the protocol
+crates ([`culvert`], [`plumbob`]) drive it through those traits, so the same code later
+runs over a production backend without change.
+
+## Out of scope
+
+- **PHY programming** — Linux has no standard userspace interface to HDMI PHY registers;
+  `StubPhy` forwards each call to a callback instead.
+- **EDID reads** — EDID is at I²C address 0x50 on the DDC bus; this crate implements the
+  SCDC transport at 0x54. Parsing EDID is piaf's.
+- **CEC, hotplug detection and enumerating connectors** — `connector_ddc_adapter` resolves
+  one named connector; the rest is the caller's.
+- **The production path** — that is a kernel driver using the DRM driver's `i2c_adapter`.
+
 ## Documentation
 
 - [`doc/architecture.md`] — design rationale, type descriptions, and test strategy
@@ -110,6 +138,10 @@ curl -A "your-tool (contact)" https://crates.io/api/v1/crates/hdmi-hal-i2c-dev/X
 
 0.1.0 was uploaded by hand with an API token; it carries no provenance and has no
 GitHub release or tag.
+
+## License
+
+Licensed under the [Mozilla Public License 2.0](LICENSE).
 
 [`hdmi-hal`]: https://crates.io/crates/hdmi-hal
 [`ScdcTransport`]: https://docs.rs/hdmi-hal/latest/hdmi_hal/scdc/trait.ScdcTransport.html

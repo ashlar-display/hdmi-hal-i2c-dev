@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The published `.crate` holds only what the crate needs**: `include` in `Cargo.toml`
   limits it to the sources, `doc/`, the README, changelog and license; it also shipped the
   CI workflows, Dependabot configuration, coverage baseline and the integration tests.
+- **The README has Stack position, Out of scope and License sections.**
 
 ## [0.4.0] - 2026-11-03
 
