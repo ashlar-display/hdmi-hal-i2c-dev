@@ -47,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   included), rustdoc with `-D warnings`, the MSRV and coverage.
 - **The publish workflow's `verify` job fails on a `[patch]` section** too, as `ci.yml`
   does on `main`: the release does not wait for `main`'s CI.
+- **`CONTRIBUTING.md` states the provenance rule** for claims about HDMI behaviour (two
+  independent public implementations, cited), and gives the coverage tolerance as 0.1
+  percentage points, as CI checks it, not 0.1%.
 
 ## [0.4.0] - 2026-11-03
 

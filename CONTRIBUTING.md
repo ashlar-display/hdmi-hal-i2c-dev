@@ -27,6 +27,9 @@ is fine.
 - Public items need rustdoc comments, and intra-doc links must resolve
   (`cargo rustdoc --all-features -- -D warnings` must pass).
 - `#![forbid(unsafe_code)]` is enforced; no unsafe code in this crate.
+- A claim about HDMI behaviour (a rule, a default, a threshold, a register encoding) cites
+  at least two independent public implementations (repository, commit, file and line).
+  Where implementations differ, the behaviour is a setting with the majority as default.
 - This crate is `std`-only and Linux-only. There is no `no_std` or async path.
 
 ## Tests
@@ -43,7 +46,7 @@ is fine.
   three commits (or three PRs).
 - CI must be green before a PR can merge: fmt, clippy (the Tier 2 tests included), docs,
   the Tier 1 tests, the same tests on the MSRV (Rust 1.85), and coverage must not drop more
-  than 0.1% below the baseline (stored in `.coverage-baseline`).
+  than 0.1 percentage points below the baseline (stored in `.coverage-baseline`).
 
 ## Publishing and upstream dependencies
 
