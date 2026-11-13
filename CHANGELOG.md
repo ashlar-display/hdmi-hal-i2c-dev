@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limits it to the sources, `doc/`, the README, changelog and license; it also shipped the
   CI workflows, Dependabot configuration, coverage baseline and the integration tests.
 - **The README has Stack position, Out of scope and License sections.**
+- **CI runs with a read-only token by default**: `ci.yml` sets `permissions: contents: read`;
+  the coverage job keeps the write permissions it needs to open its ratchet PR. The test job
+  ran with the repository's default token permissions.
 
 ## [0.4.0] - 2026-11-03
 
