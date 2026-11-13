@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `integration` feature), rustdoc with `-D warnings`, and the MSRV check.
 - **`CONTRIBUTING.md` matches the CI checks**: clippy over all targets (the Tier 2 tests
   included), rustdoc with `-D warnings`, the MSRV and coverage.
+- **The publish workflow's `verify` job fails on a `[patch]` section** too, as `ci.yml`
+  does on `main`: the release does not wait for `main`'s CI.
 
 ## [0.4.0] - 2026-11-03
 
