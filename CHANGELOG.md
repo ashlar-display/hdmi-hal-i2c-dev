@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The README's Ashlar block links the stack's crate list** instead of naming every crate,
+  so it no longer goes stale on crates.io when a crate is added.
+
+### Internal
+
+- **The README's Rust example compiles as a doctest** (`ReadmeDoctests` in `lib.rs`,
+  compiled only for `cargo test`; it is `no_run`, since it opens a device), so it is
+  checked against the API.
+- **The published `.crate` holds only what the crate needs**: `include` in `Cargo.toml`
+  limits it to the sources, `doc/`, the README, changelog and license; it also shipped the
+  CI workflows, Dependabot configuration, coverage baseline and the integration tests.
+- **The README has Stack position, Out of scope and License sections.**
+- **CI runs with a read-only token by default**: `ci.yml` sets `permissions: contents: read`;
+  the coverage job keeps the write permissions it needs to open its ratchet PR. The test job
+  ran with the repository's default token permissions.
+- **CI's test job does not keep the checkout's git credentials** (`persist-credentials:
+  false`); it never pushes. The coverage job keeps them to push its ratchet branch.
+- **CI fails on `main` when `Cargo.toml` has a `[patch]` section**: `cargo package` drops
+  it, so a release built with one would not build from crates.io.
+- **Clippy lints the tests too** (`--all-targets`), and once more with the `integration`
+  feature, so the Tier 2 tests are linted although CI cannot run them; in CI and in the
+  publish workflow's `verify` job. It linted only the library.
+- **rustdoc runs with every feature and `-D warnings`**, as docs.rs builds, in CI and in
+  the publish workflow's `verify` job: `-D missing_docs` alone let broken intra-doc links
+  through.
+- **The MSRV is checked**: an `MSRV` job in CI and in the publish workflow (which waits for
+  it) runs the tests on the `rust-version` from `Cargo.toml` (1.85) with
+  `cargo msrv verify`; the crate declared it, and nothing checked it.
+- **The coverage job's cache is keyed on the Rust version** as well as `Cargo.lock`, so a
+  `target/` built by an older Rust is not restored: `cargo llvm-cov clean --workspace`
+  leaves its instrumented binaries behind, and the report would count their lines as
+  uncovered (it did so in other Ashlar crates after the update to Rust 1.100).
+- **`doc/setup.md` lists the checks CI runs**: clippy over all targets (once with the
+  `integration` feature), rustdoc with `-D warnings`, and the MSRV check.
+- **`CONTRIBUTING.md` matches the CI checks**: clippy over all targets (the Tier 2 tests
+  included), rustdoc with `-D warnings`, the MSRV and coverage.
+- **The publish workflow's `verify` job fails on a `[patch]` section** too, as `ci.yml`
+  does on `main`: the release does not wait for `main`'s CI.
+- **`CONTRIBUTING.md` states the provenance rule** for claims about HDMI behaviour (two
+  independent public implementations, cited), and gives the coverage tolerance as 0.1
+  percentage points, as CI checks it, not 0.1%.
+- **The coverage job runs cargo with `--locked`**, as the other jobs do, so it measures
+  the build the tests ran; `doc/setup.md`'s commands match.
+- **The docs give the coverage tolerance as 0.1 percentage points everywhere** (as CI
+  checks it, not 0.1%), and `doc/setup.md` installs the cargo-msrv version CI pins
+  (0.19.6).
+- **The MSRV job shows why it failed**: `cargo msrv verify` runs without
+  `--output-format minimal`, which printed only `true` or `false` and dropped the compiler
+  error.
+
 ## [0.4.0] - 2026-11-03
 
 ### Changed

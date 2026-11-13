@@ -14,8 +14,22 @@ cargo build
 
 ```sh
 cargo fmt --check
-cargo clippy --locked -- -D warnings
-cargo rustdoc --locked -- -D missing_docs
+cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --features integration -- -D warnings
+cargo rustdoc --locked --all-features -- -D warnings
+```
+
+The second clippy run lints the Tier 2 tests, which need `i2c-stub` to run.
+
+## Checking the MSRV
+
+The MSRV is `rust-version` in `Cargo.toml`. CI checks it with
+[`cargo-msrv`](https://github.com/foresterre/cargo-msrv), which runs the Tier 1 tests on
+that toolchain:
+
+```sh
+cargo install cargo-msrv --version 0.19.6 --locked
+cargo msrv verify -- cargo test --locked
 ```
 
 ## Running Tier 1 tests

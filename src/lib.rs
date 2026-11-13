@@ -53,3 +53,8 @@ pub use discovery::connector_ddc_adapter;
 pub use error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase};
 pub use phy::{PhyCall, StubPhy};
 pub use transport::I2cDevTransport;
+
+// Compiles and runs the README's examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
