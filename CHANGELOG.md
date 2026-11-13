@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Clippy lints the tests too** (`--all-targets`), and once more with the `integration`
   feature, so the Tier 2 tests are linted although CI cannot run them; in CI and in the
   publish workflow's `verify` job. It linted only the library.
+- **rustdoc runs with every feature and `-D warnings`**, as docs.rs builds, in CI and in
+  the publish workflow's `verify` job: `-D missing_docs` alone let broken intra-doc links
+  through.
 
 ## [0.4.0] - 2026-11-03
 
