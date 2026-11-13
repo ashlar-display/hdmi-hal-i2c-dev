@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The README's Rust example compiles as a doctest** (`ReadmeDoctests` in `lib.rs`,
   compiled only for `cargo test`; it is `no_run`, since it opens a device), so it is
   checked against the API.
+- **The published `.crate` holds only what the crate needs**: `include` in `Cargo.toml`
+  limits it to the sources, `doc/`, the README, changelog and license; it also shipped the
+  CI workflows, Dependabot configuration, coverage baseline and the integration tests.
 
 ## [0.4.0] - 2026-11-03
 
