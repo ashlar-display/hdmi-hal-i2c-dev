@@ -133,3 +133,9 @@ To check against the baseline:
 cargo llvm-cov --locked | grep -oP '\d+\.\d+(?=%)' | tail -1
 cat .coverage-baseline
 ```
+
+Rust versions count lines differently, so the same code can measure differently on two
+versions. Measure the baseline with the Rust version CI's `stable` uses
+(`cargo +<version> llvm-cov …`), or CI can fail on a baseline that a different local
+version produced.
+
