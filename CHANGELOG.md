@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **Requires hdmi-hal 0.7**, its breaking release: the hdmi-hal traits this crate
+  implements (`DdcBus`, `FrlPhy`, `TmdsPhy`) are 0.7's.
+
 - **Requires hdmi-hal's PHY traits by link mode.** `StubPhy` implements `FrlPhy`,
   hdmi-hal's new name for `HdmiPhy`, and `set_scrambling` is now part of its `TmdsPhy`
   implementation, as hdmi-hal moved it there.
