@@ -10,6 +10,7 @@ repository = "https://github.com/ashlar-display/hdmi-hal-i2c-dev"
 homepage = "https://ashlar-display.org"
 keywords = ["ashlar", "hdmi", "i2c", "linux", "scdc"]
 categories = ["hardware-support", "embedded", "os::linux-apis"]
+include = ["src/**", "doc/**", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [package.metadata.docs.rs]
 all-features = true

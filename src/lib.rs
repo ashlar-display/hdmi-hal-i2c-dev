@@ -74,3 +74,8 @@ pub use discovery::connector_ddc_adapter;
 pub use edid::{EdidReadError, read_edid};
 pub use error::{I2cDevError, I2cErrorKind, Refusal};
 pub use phy::{PhyCall, StubPhy};
+
+// Compiles and runs the README's examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
