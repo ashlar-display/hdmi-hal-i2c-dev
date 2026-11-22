@@ -7,12 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Requires hdmi-hal 0.7**, its breaking release: the hdmi-hal traits this crate
+  implements (`DdcBus`, `FrlPhy`, `TmdsPhy`) are 0.7's.
+- **Requires hdmi-hal's PHY traits by link mode.** `StubPhy` implements `FrlPhy`,
+  hdmi-hal's new name for `HdmiPhy`, and `set_scrambling` is now part of its `TmdsPhy`
+  implementation, as hdmi-hal moved it there.
+- **`I2cDevTransport` is removed: SCDC is `hdmi-hal`'s `ScdcOverDdc` over an `I2cDevBus`.**
+  `ScdcOverDdc::new(&bus)` replaces `I2cDevTransport::open`, and `ScdcOverDdc::bytewise(&bus)`
+  replaces `open_bytewise`; the EDID reader shares the same bus. `I2cDevBus::open` uses
+  `I2C_RDWR`, so an SMBus-only adapter, which the transport served, needs
+  `I2cDevBus::open_smbus`. A block read's limit is now the bus's capabilities (32 bytes at
+  SMBus level), and a longer block is `Refused` with `Refusal::TooLong`. With the transport
+  go `transport::MAX_BLOCK_LEN` and the errors only it returned: `I2cDevError::Transaction`,
+  `BlockReadTooLong` and `UnexpectedBlockLength`, `I2cTransactionError` and `MessagePhase`.
+  A failed operation is `I2cDevError::Transfer`, with its address; a block of another length
+  than asked is `Transfer` with `Unknown { errno: EIO }`, the buffer unchanged.
+
+### Added
+
+- **`I2cDevBus`, `hdmi-hal`'s `DdcBus` over `I2C_RDWR`**: one ioctl per operation, each
+  message with its own address, so an E-DDC read writes the segment pointer (0x30) and reads
+  the target in one transfer, through `i2cdev`'s `LinuxI2CBus`. `open(path)` takes the
+  capabilities from `adapters`, a table of the DRM DDC adapters by the name they register
+  under (`SMBUS_LEVEL` for one not in it), and reads `EAGAIN` and `EINVAL` as their drivers
+  mean them; `open_with(path, capabilities)` takes the capabilities from the caller;
+  `open_smbus(path)` makes every operation an SMBus call, for an adapter without plain I²C
+  such as `i2c-stub` (`I2cErrorKind::NoDevice` for its `ENODEV`, `NoAcknowledge(Address)`).
+  What the capabilities rule out, a write of no bytes, an E-DDC read past its segment and a
+  message over the kernel's 8192 bytes are refused before any ioctl (`I2cDevError::Refused` with a `Refusal`). A failed transfer is
+  `I2cDevError::Transfer` with its address, one the kernel cut short
+  `IncompleteTransfer`; a poisoned lock is recovered.
+- **`edid::read_edid`**, reading a sink's EDID over any `hdmi-hal` `DdcBus` as piaf's
+  read plan directs: one E-DDC `read_segmented` per block, into the caller's buffer, bounded
+  by the options, the buffer and the segments the bus reaches (an EDID with more blocks is
+  the plan's `BlocksNotRead` warning). One attempt per block; `EdidReadError` names a failed
+  block, a refused base block, or a buffer with no room. A new dependency on piaf.
+- **`StubPhy` implements `TmdsPhy`**, so a TMDS bring-up runs over it: `configure`,
+  `set_scrambling`, `start_output` and `stop_output` forward as the new `PhyCall` variants
+  `Configure`, `SetScrambling`, `StartOutput` and `StopOutput`, and `capabilities` reports
+  `StubPhy::DEFAULT_CAPABILITIES` (600 MHz, a scrambler, low-rate scrambling) or what
+  `with_capabilities` sets.
+- **`DdcError` for `I2cDevError`**, as hdmi-hal now requires of a bus's error: `ENXIO` is
+  `NoAcknowledge(Unknown)`, a NACKed data byte `NoAcknowledge(Data)`, `EAGAIN` and `EBUSY`
+  `Busy`, `ETIMEDOUT` `Timeout`, `ESHUTDOWN` and `ENODEV` `Detached`, `EOPNOTSUPP` and a
+  refusal `Unsupported`, and the rest `Other`.
+
 ### Changed
 
 - **The README's Ashlar block links the stack's crate list** instead of naming every crate,
   so it no longer goes stale on crates.io when a crate is added.
 
 ### Internal
+
+- **`read_edid` is tested against maquette's simulated sink** (`tests/edid.rs`, a
+  dev-dependency on maquette): its EDID behind the E-DDC segment pointer over a simulated
+  DDC bus, with bus capabilities and faults set per test.
+- The `i2c-stub` tests run SCDC as `ScdcOverDdc` over a bus opened with `open_smbus`
+  (`tests/scdc.rs`, formerly `tests/transport.rs`), and their NACK tests are filtered by
+  `no_chip`, not `slave_not_registered`.
 
 - **The README's Rust example compiles as a doctest** (`ReadmeDoctests` in `lib.rs`,
   compiled only for `cargo test`; it is `no_run`, since it opens a device), so it is
