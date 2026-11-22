@@ -128,6 +128,21 @@ block on, and records each call.
 - A bad base block is refused; a bad extension block is read and reported
 - The errors print and chain; an unsized (`dyn`) bus works
 
+### `read_edid` against a simulated sink (in `tests/edid.rs`)
+
+The same driver against [maquette](https://docs.rs/maquette)'s simulated sink: its EDID
+store behind the E-DDC segment pointer, reached over the bench's DDC bus, with the bus's
+capabilities and faults set per test.
+
+**Covered:**
+- A one-block EDID read whole; blocks past segment 0 read through the segment pointer
+- A bus that splits reads still reads every block
+- A bus that reaches segment 0 only reads two blocks and says so; a sink without a segment
+  pointer serves segment 0 only
+- A failed block read names the block
+- A bad base block is refused; a bad extension block is read and reported
+- A sink without an EDID does not answer
+
 ## Tier 2 — `i2c-stub` integration tests
 
 Gated behind `--features integration`. Requires the `i2c-stub` kernel module and a

@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **`read_edid` is tested against maquette's simulated sink** (`tests/edid.rs`, a
+  dev-dependency on maquette): its EDID behind the E-DDC segment pointer over a simulated
+  DDC bus, with bus capabilities and faults set per test.
 - The `i2c-stub` tests run SCDC as `ScdcOverDdc` over a bus opened with `open_smbus`
   (`tests/scdc.rs`, formerly `tests/transport.rs`), and their NACK tests are filtered by
   `no_chip`, not `slave_not_registered`.
