@@ -1,8 +1,10 @@
-//! Integration tests for [`I2cDevTransport`] against the Linux `i2c-stub` kernel module.
+//! Integration tests for SCDC over an [`I2cDevBus`], hdmi-hal's [`ScdcOverDdc`], against the
+//! Linux `i2c-stub` kernel module.
 //!
-//! These tests exercise the SMBus byte-data and I2C block-read ioctl paths against a
-//! real kernel I²C adapter. They validate register read/write semantics and error handling
-//! — things that cannot be verified without a responding kernel device.
+//! These tests exercise the SMBus calls of a bus opened with [`I2cDevBus::open_smbus`]
+//! against a real kernel I²C adapter, through the SCDC transport the stack uses. They
+//! validate register read/write semantics and error handling — things that cannot be verified
+//! without a responding kernel device.
 //!
 //! # Setup
 //!
@@ -35,11 +37,10 @@
 //! `skipped: <variable> not set`; `--nocapture` shows it (a skipped test still reports
 //! `ok`). With `I2C_STUB_REQUIRED=1` a skip fails instead: set it in CI and for the release
 //! run, so that a forgotten adapter variable cannot pass for tier 2 coverage, and run each
-//! pass with only its own tests (`--skip slave_not_registered` in the first,
-//! `slave_not_registered` in the second):
+//! pass with only its own tests (`--skip no_chip` in the first, `no_chip` in the second):
 //!
 //! ```sh
-//! I2C_STUB_REQUIRED=1 I2C_STUB_ADAPTER=N cargo test --locked --features integration -- --skip slave_not_registered
+//! I2C_STUB_REQUIRED=1 I2C_STUB_ADAPTER=N cargo test --locked --features integration -- --skip no_chip
 //! ```
 //!
 //! # NACK test setup
@@ -53,46 +54,40 @@
 //! sudo modprobe -r i2c-stub
 //! sudo modprobe i2c-stub chip_addr=0x55
 //! sudo chmod 0666 /dev/i2c-M
-//! I2C_STUB_ADAPTER_NACK=M cargo test --locked --features integration slave_not_registered -- --nocapture
+//! I2C_STUB_ADAPTER_NACK=M cargo test --locked --features integration no_chip -- --nocapture
 //! ```
 //!
 //! (with `I2C_STUB_REQUIRED=1` too, in CI and for the release run).
 //!
-//! Against `i2c-stub` the error's kind is `AdapterGone`: the stub returns `ENODEV` for an
-//! address with no chip, where a real adapter returns `ENXIO` (`AddressNack`).
-//!
 //! # What is and is not covered
 //!
 //! **Covered:**
-//! - SMBus byte-data read (`I2C_SMBUS`): combined write of register address
-//!   then read of one byte, in a single ioctl
-//! - SMBus byte-data write (`I2C_SMBUS`): write of register address and value
-//! - SMBus I2C block read (`I2C_SMBUS_I2C_BLOCK_DATA`), `read_block`: consecutive
-//!   registers in one ioctl, for 9 bytes (the CED block), 2 bytes and the 32-byte
-//!   maximum; `i2c-stub` supports it by default (`I2C_FUNC_SMBUS_I2C_BLOCK`)
-//! - A block read longer than 32 bytes refused before any ioctl
+//! - A register read: a byte-data read, the offset written and one byte read in one ioctl
+//! - A register write: a byte-data write of offset and value
+//! - `read_block`: consecutive registers in one I²C block read, for 9 bytes (the CED
+//!   block), 2 bytes and the 32-byte maximum; `i2c-stub` supports it by default
+//!   (`I2C_FUNC_SMBUS_I2C_BLOCK`)
+//! - A block read longer than 32 bytes refused before any ioctl, by the bus's capabilities
 //! - A block read past 0xFF: `i2c-stub` ends it at 0xFF, so a 32-byte read from 0xF0 is
-//!   `UnexpectedBlockLength` (16 bytes returned)
-//! - A transport opened with `open_bytewise` reading a block a register at a time
-//! - Slave address 0x54 is bound at device-open time
+//!   `EIO` and the buffer is left as it was
+//! - A transport made with `ScdcOverDdc::bytewise` reading a block a register at a time
 //! - Read/write round-trip correctness against the stub register map
-//! - A `Transaction` error when the slave address is not registered, for a byte read and
-//!   for a block read (`AdapterGone` on `i2c-stub`, which returns `ENODEV`; `AddressNack`
-//!   on a compliant adapter; `Unknown { errno: EIO }` on `amdgpu`)
+//! - `NoAcknowledge(Address)` when no chip is at 0x54, for a register read and for a block
+//!   read (`i2c-stub` returns `ENODEV` for it)
 //!
 //! **Not covered:**
 //! - Bus errors, clock stretch timeouts, and arbitration loss — `i2c-stub`
 //!   always ACKs registered addresses; these conditions require misbehaving
 //!   hardware. Their errno→`I2cErrorKind` mapping is validated by the Tier 1
-//!   unit tests in `src/transport_tests.rs`.
+//!   unit tests in `src/error_tests.rs`.
 
 #![cfg(feature = "integration")]
 
 use std::path::PathBuf;
 
-use hdmi_hal::scdc::ScdcTransport;
-use hdmi_hal_i2c_dev::I2cDevError;
-use hdmi_hal_i2c_dev::transport::{self, I2cDevTransport};
+use hdmi_hal::ddc::{DdcError, DdcErrorKind, NoAcknowledgeSource};
+use hdmi_hal::scdc::{ScdcOverDdc, ScdcTransport};
+use hdmi_hal_i2c_dev::{I2cDevBus, I2cDevError, I2cErrorKind, Refusal};
 
 /// Return the adapter path for `var`, or `None` if the env var is unset.
 ///
@@ -112,20 +107,17 @@ fn adapter_path(var: &str) -> Option<PathBuf> {
     Some(PathBuf::from(format!("/dev/i2c-{n}")))
 }
 
-fn open_transport(var: &str) -> Option<I2cDevTransport> {
+fn open_bus(var: &str) -> Option<I2cDevBus> {
     let path = adapter_path(var)?;
     Some(
-        I2cDevTransport::open(&path)
+        I2cDevBus::open_smbus(&path)
             .unwrap_or_else(|e| panic!("failed to open {}: {e}", path.display())),
     )
 }
 
-fn open_transport_bytewise(var: &str) -> Option<I2cDevTransport> {
-    let path = adapter_path(var)?;
-    Some(
-        I2cDevTransport::open_bytewise(&path)
-            .unwrap_or_else(|e| panic!("failed to open {}: {e}", path.display())),
-    )
+/// SCDC over `bus`, `read_block` in one transfer.
+fn scdc(bus: &I2cDevBus) -> ScdcOverDdc<&I2cDevBus> {
+    ScdcOverDdc::new(bus).expect("an SMBus bus serves SCDC")
 }
 
 // --- Read/write correctness --------------------------------------------------
@@ -134,27 +126,28 @@ fn open_transport_bytewise(var: &str) -> Option<I2cDevTransport> {
 fn read_unwritten_register_returns_zero() {
     // i2c-stub initialises all registers to 0x00. Reading register 0x01
     // (an SCDC register unlikely to be touched by other tests) should return 0.
-    let Some(transport) = open_transport("I2C_STUB_ADAPTER") else {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
-    let val = transport.read(0x01).expect("SCDC read failed");
+    let val = scdc(&bus).read(0x01).expect("SCDC read failed");
     assert_eq!(val, 0x00, "stub registers should initialise to 0x00");
 }
 
 #[test]
 fn write_returns_ok() {
-    let Some(mut transport) = open_transport("I2C_STUB_ADAPTER") else {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
-    transport.write(0x20, 0x01).expect("SCDC write failed");
+    scdc(&bus).write(0x20, 0x01).expect("SCDC write failed");
 }
 
 #[test]
 fn read_write_round_trip() {
     // Write a distinctive value to a register and read it back.
-    let Some(mut transport) = open_transport("I2C_STUB_ADAPTER") else {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
+    let mut transport = scdc(&bus);
     transport.write(0x30, 0xAB).expect("write failed");
     let val = transport.read(0x30).expect("read failed");
     assert_eq!(val, 0xAB, "read-back should match written value");
@@ -162,9 +155,10 @@ fn read_write_round_trip() {
 
 #[test]
 fn multiple_registers_are_independent() {
-    let Some(mut transport) = open_transport("I2C_STUB_ADAPTER") else {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
+    let mut transport = scdc(&bus);
     transport.write(0x40, 0x11).expect("write reg 0x40 failed");
     transport.write(0x41, 0x22).expect("write reg 0x41 failed");
     assert_eq!(transport.read(0x40).expect("read reg 0x40 failed"), 0x11);
@@ -178,9 +172,10 @@ fn multiple_registers_are_independent() {
 #[test]
 fn block_read_returns_consecutive_registers() {
     // The CED block's nine registers, 0x50–0x58, in one ioctl.
-    let Some(mut transport) = open_transport("I2C_STUB_ADAPTER") else {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
+    let mut transport = scdc(&bus);
     let values = [0x34, 0x81, 0xFF, 0x00, 0xFF, 0xFF, 0x4E, 0x01, 0x80];
     for (reg, value) in (0x50..).zip(values) {
         transport.write(reg, value).expect("write failed");
@@ -194,9 +189,10 @@ fn block_read_returns_consecutive_registers() {
 
 #[test]
 fn block_read_of_two_registers() {
-    let Some(mut transport) = open_transport("I2C_STUB_ADAPTER") else {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
+    let mut transport = scdc(&bus);
     transport.write(0x60, 0x65).expect("write failed");
     transport.write(0x61, 0xF1).expect("write failed");
     let mut buf = [0u8; 2];
@@ -208,13 +204,14 @@ fn block_read_of_two_registers() {
 
 #[test]
 fn block_read_of_the_maximum_length() {
-    let Some(mut transport) = open_transport("I2C_STUB_ADAPTER") else {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
+    let mut transport = scdc(&bus);
     for reg in 0xA0..0xC0u8 {
         transport.write(reg, reg ^ 0x5A).expect("write failed");
     }
-    let mut buf = [0u8; transport::MAX_BLOCK_LEN];
+    let mut buf = [0u8; 32];
     transport
         .read_block(0xA0, &mut buf)
         .expect("block read failed");
@@ -224,19 +221,22 @@ fn block_read_of_the_maximum_length() {
 
 #[test]
 fn block_read_longer_than_the_maximum_is_refused() {
-    let Some(transport) = open_transport("I2C_STUB_ADAPTER") else {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
     let mut buf = [0u8; 33];
-    let err = transport
+    let err = scdc(&bus)
         .read_block(0x00, &mut buf)
         .expect_err("a 33-byte block read should be refused");
     assert!(
         matches!(
             err,
-            I2cDevError::BlockReadTooLong {
-                len: 33,
-                max: 32,
+            I2cDevError::Refused {
+                reason: Refusal::TooLong {
+                    len: 33,
+                    max: 32,
+                    ..
+                },
                 ..
             }
         ),
@@ -247,21 +247,20 @@ fn block_read_longer_than_the_maximum_is_refused() {
 #[test]
 fn block_read_past_0xff_ends_at_0xff_on_i2c_stub() {
     // `i2c-stub` returns at most `256 - command` bytes for an I2C block read, so a 32-byte
-    // read from 0xF0 returns 16: the one end-to-end way to an `UnexpectedBlockLength`.
-    let Some(transport) = open_transport("I2C_STUB_ADAPTER") else {
+    // read from 0xF0 returns 16: the one end-to-end way to a block of another length.
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
     let mut buf = [0xAAu8; 32];
-    let err = transport
+    let err = scdc(&bus)
         .read_block(0xF0, &mut buf)
         .expect_err("a block read past 0xFF should come back short on i2c-stub");
     assert!(
         matches!(
             err,
-            I2cDevError::UnexpectedBlockLength {
-                register: 0xF0,
-                requested: 32,
-                returned: 16,
+            I2cDevError::Transfer {
+                address: 0x54,
+                kind: I2cErrorKind::Unknown { errno: libc::EIO },
                 ..
             }
         ),
@@ -272,10 +271,11 @@ fn block_read_past_0xff_ends_at_0xff_on_i2c_stub() {
 
 #[test]
 fn bytewise_block_read_returns_consecutive_registers() {
-    // `open_bytewise`: one byte-data read per register, for adapters without the block read.
-    let Some(mut transport) = open_transport_bytewise("I2C_STUB_ADAPTER") else {
+    // `bytewise`: one byte-data read per register, for adapters without the block read.
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER") else {
         return;
     };
+    let mut transport = ScdcOverDdc::bytewise(&bus).expect("an SMBus bus serves SCDC");
     let values = [0x12, 0x34, 0x56, 0x78];
     for (reg, value) in (0xD0..).zip(values) {
         transport.write(reg, value).expect("write failed");
@@ -287,42 +287,38 @@ fn bytewise_block_read_returns_consecutive_registers() {
     assert_eq!(buf, values);
 }
 
-// --- NACK (unregistered address) --------------------------------------------
+// --- NACK (no chip at the address) -------------------------------------------
 
 #[test]
-fn read_produces_error_when_slave_not_registered() {
-    // Uses a stub bus where 0x54 is not registered, so any transaction to the SCDC
-    // address fails: ENXIO (a NACK) on compliant adapters, EIO on amdgpu, and ENODEV on
-    // i2c-stub, which reports a missing chip that way.
-    let Some(transport) = open_transport("I2C_STUB_ADAPTER_NACK") else {
+fn read_fails_with_no_chip() {
+    // Uses a stub bus where 0x54 is not registered, so any transfer to the SCDC address
+    // fails: ENXIO (a NACK) on compliant adapters, EIO on amdgpu, and ENODEV on i2c-stub,
+    // which reports a missing chip that way; a bus opened for SMBus takes it as such.
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER_NACK") else {
         return;
     };
-    let err = transport
+    let err = scdc(&bus)
         .read(0x00)
         .expect_err("expected error for unregistered address, got Ok");
-    match err {
-        I2cDevError::Transaction(ref e) => {
-            eprintln!("NACK test: phase={:?} kind={:?}", e.phase, e.kind);
-            // On a compliant adapter this will be AddressNack, on amdgpu
-            // Unknown { errno: EIO }, on i2c-stub AdapterGone (ENODEV). All are
-            // correct; the test just verifies an error is produced and that it is a
-            // Transaction variant.
-        }
-        other => panic!("expected Transaction error, got: {other:?}"),
-    }
+    assert_eq!(
+        err.kind(),
+        DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
+        "got: {err:?}"
+    );
 }
 
 #[test]
-fn block_read_produces_error_when_slave_not_registered() {
-    let Some(transport) = open_transport("I2C_STUB_ADAPTER_NACK") else {
+fn block_read_fails_with_no_chip() {
+    let Some(bus) = open_bus("I2C_STUB_ADAPTER_NACK") else {
         return;
     };
     let mut buf = [0u8; 9];
-    let err = transport
+    let err = scdc(&bus)
         .read_block(0x50, &mut buf)
         .expect_err("expected error for unregistered address, got Ok");
-    assert!(
-        matches!(err, I2cDevError::Transaction(_)),
-        "expected Transaction error, got: {err:?}"
+    assert_eq!(
+        err.kind(),
+        DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
+        "got: {err:?}"
     );
 }
